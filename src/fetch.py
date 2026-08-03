@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import os
 import sys
-import tomllib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from dotenv import load_dotenv
-import requests
-from datetime import datetime
 
+import requests
+import tomllib
+from dotenv import load_dotenv
 
 LICHESS_GAMES_URL = "https://lichess.org/api/games/user/{username}"
 
@@ -26,12 +26,11 @@ class FetchConfig:
     username: str
     perf_types: list[str]
     token: str | None
-    # TODO: any other config.toml fields you decide you need (rated-only? since?)
+    # TODO: any other config.toml fields that will appear in the future (rated-only? since?)
 
 
 def load_config(config_path: Path = Path("config.toml")) -> FetchConfig:
     """Read username/perfTypes from config.toml and LICHESS_TOKEN from .env."""
-
 
     load_dotenv()
     token = os.getenv("LICHESS_TOKEN")
@@ -53,8 +52,6 @@ def build_request(config: FetchConfig) -> tuple[str, dict, dict]:
     "opening": "true",
     "rated": "true",
     "perfType": ",".join(config.perf_types),
-    # TODO: remove before real fetch
-    "max": "2",
     }
 
     headers = {"Accept": "application/x-chess-pgn"}
@@ -78,14 +75,14 @@ def stream_games_to_file(url: str, params: dict, headers: dict, out_path: Path) 
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
                 n += chunk.count(b"[Event ")
-                print(f"~{n} games", end="\r")
+                print(f"~{n} games", end="\r", flush=True)
     return n
 
 
 def main() -> None:
     """Wire it together: load config, build request, stream to today's file."""
-    
-    today = datetime.now().strftime("%Y-%m-%d")
+
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     config = load_config()
     url,params,headers = build_request(config)
     out_path = Path("data/raw/lichess") / f"games_{today}.pgn"
