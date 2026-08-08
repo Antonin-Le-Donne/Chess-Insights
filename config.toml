@@ -1,2 +1,9 @@
 username = "DeltaKnight90"
 perf_types = ["blitz", "rapid"]
+
+[thresholds]
+blunder = 20
+mistake = 10
+inaccuracy = 5
+time_pressure_pct = 0.10
+long_think_factor = 8
