@@ -35,23 +35,33 @@ def m1_fatigue_curve(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
 def m2_time_to_blunder(moves: pd.DataFrame) -> dict:
     """P(blunder within my next 3 moves | long_think on current move) vs
     baseline P(blunder), as a ratio WITH counts (spec section 5, M2).
-
-    Steps:
-    - filter to is_my_move rows, sorted by game_id + ply
-    - "within next 3 of MY moves" -- careful, that's not "next 3 plies"
-      (which would include opponent moves), it's the next 3 rows within
-      the is_my_move-filtered, per-game-sorted subset. groupby("game_id")
-      + a rolling/shift-based window on the blunder flag.
-    - baseline P(blunder) = overall blunder rate among is_my_move rows
-    - P(blunder | long_think) = blunder rate among rows immediately
-      following a long_think == True row (same windowing as above)
-    - return a dict: {"ratio": ..., "p_given_long_think": ..., "baseline": ...,
-      "n_long_think": ..., "n_blunders_after": ...} -- counts matter per
-      the spec, don't just return the ratio alone
     """
 
-    
+    my_moves = moves[moves["is_my_move"]].sort_values(["game_id", "ply"])
+    is_blunder = my_moves["move_quality"] == "blunder"
 
+    next1 = is_blunder.groupby(my_moves["game_id"]).shift(-1)
+    next2 = is_blunder.groupby(my_moves["game_id"]).shift(-2)
+    next3 = is_blunder.groupby(my_moves["game_id"]).shift(-3)
+
+
+    blunder_within_3 = next1.fillna(False) | next2.fillna(False) | next3.fillna(False)
+
+    baseline = is_blunder.mean()
+
+    p_given_long_think = blunder_within_3[my_moves["long_think"]].mean()
+    n_long_think = my_moves["long_think"].sum()
+    n_blunders_after = blunder_within_3[my_moves["long_think"]].sum()
+
+    ratio = p_given_long_think / baseline
+
+    return {
+        "ratio": ratio,
+        "p_given_long_think": p_given_long_think,
+        "baseline": baseline,
+        "n_long_think": n_long_think,
+        "n_blunders_after": n_blunders_after,
+    }
 
 def m3_greed_conversion(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """Per game where my win% first reaches >= 80 ("winning point"):
