@@ -11,6 +11,20 @@ from __future__ import annotations
 
 import pandas as pd
 
+ECO_FAMILY_MAP = [
+    ("A80", "A99", "Dutch"),
+    ("B20", "B99", "Sicilian"),
+    ("C00", "C19", "French"),
+    ("C50", "C59", "Italian"),
+    ("D06", "D69", "Queen's Gambit"),
+    ("E00", "E09", "Catalan"),
+]
+
+def eco_to_family(eco: str) -> str | None:
+    for lo,hi, name in ECO_FAMILY_MAP:
+        if lo <= eco <= hi:
+            return name
+    return None
 
 def m1_fatigue_curve(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """Mean win_pct_delta + blunder rate of MY moves, bucketed by move_number
@@ -18,13 +32,14 @@ def m1_fatigue_curve(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     tercile (spec section 5, M1)."""
 
     my_moves = moves[moves["is_my_move"]]
-    move_bucket = (my_moves["move_number"] // 5 ) * 5
+    move_bucket = ((my_moves["move_number"] // 5) * 5).rename("move_bucket")
+    perf_type = my_moves["game_id"].map(games.set_index("game_id")["perf_type"]).rename("perf_type")
 
     game_duration = moves.groupby("game_id")["time_spent"].sum()
     tercile_per_game = pd.qcut(game_duration, q=3, labels=["short", "medium", "long"])
-    duration_tercile = my_moves["game_id"].map(tercile_per_game)
+    duration_tercile = my_moves["game_id"].map(tercile_per_game).rename("duration_tercile")
 
-    grouped = my_moves.groupby(["perf_type", move_bucket, duration_tercile]).agg(
+    grouped = my_moves.groupby([perf_type, move_bucket, duration_tercile]).agg(
             mean_win_pct_delta=("win_pct_delta", "mean"),
             blunder_rate=("move_quality", lambda s: (s == "blunder").mean()),
             )
@@ -66,60 +81,128 @@ def m2_time_to_blunder(moves: pd.DataFrame) -> dict:
 def m3_greed_conversion(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """Per game where my win% first reaches >= 80 ("winning point"):
     plies_to_finish, did_convert, max_drawdown (spec section 5, M3).
-
-    Steps:
-    - for each game_id, filter is_my_move rows (or all rows? -- win_pct
-      at ANY row, mine or opponent's, could hit >= 80 first; decide and
-      document which convention you use), find the first ply where the
-      MY-perspective win% (see eval_state's my_win_pct pattern from
-      features.py) crosses 80
-    - games that never reach 80 are excluded from this metric entirely
-    - plies_to_finish = game's n_plies - winning_point_ply
-    - did_convert = games["result_for_me"] == 1 for that game
-    - max_drawdown = the minimum my_win_pct reached AFTER the winning
-      point ply (within the same game)
-    - return one row per qualifying game with these columns
     """
 
+    my_win_pct = moves["win_pct"].where(moves["is_my_move"], 100 - moves["win_pct"])
 
-def m4_clock_burn_map(moves: pd.DataFrame) -> pd.DataFrame:
+    winning_rows = moves[my_win_pct >= 80]
+    winning_point_ply = winning_rows.groupby("game_id")["ply"].min()
+
+    qualifying = games[games["game_id"].isin(winning_point_ply.index)].copy()
+    qualifying["winning_point_ply"] = qualifying["game_id"].map(winning_point_ply)
+    qualifying["plies_to_finish"] = qualifying["n_plies"] - qualifying["winning_point_ply"]
+    qualifying["did_convert"] = qualifying["result_for_me"] == 1
+
+    wp_per_row = moves["game_id"].map(winning_point_ply)
+    after = moves[moves["ply"] > wp_per_row]
+    max_drawdown = my_win_pct[after.index].groupby(after["game_id"]).min()
+    qualifying["max_drawdown"] = qualifying["game_id"].map(max_drawdown)
+
+    return qualifying
+
+def m4_clock_burn_map(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """Median + p90 time_spent by move_number, median clock_after by
     move_number, split by perf_type (spec section 5, M4).
-
-    Steps:
-    - filter to is_my_move rows
-    - group by (perf_type, move_number), aggregate:
-      time_spent -> median, and the 90th percentile (Series.quantile(0.9))
-      clock_after -> median
-    - pattern flag ("slow start -> time pressure >= move X" vs "even
-      burn") is a judgment call you make LOOKING at the resulting table/
-      chart, not something to compute automatically -- leave that
-      out of this function, it's dashboard/analysis-time reasoning
     """
+    my_moves = moves[moves["is_my_move"]]
+    perf_type = my_moves["game_id"].map(
+        games.set_index("game_id")["perf_type"]
+        ).rename("perf_type")
 
-ECO_FAMILY_MAP = {
-    # TODO: manual ECO-prefix -> family name mapping, spec section 5 M5
-    # mentions Sicilian/French/Dutch/Italian/Catalan/QG specifically.
-    # Sicilian is B20-B99, French is C00-C19, Dutch is A80-A99, etc. --
-    # look up an ECO code reference table, this needs real chess opening
-    # knowledge, not something to guess column-by-column.
-}
+    grouped = my_moves.groupby([perf_type, "move_number"]).agg(
+        median_time_spent=("time_spent", "median"),
+        p90_time_spent=("time_spent", lambda s: s.quantile(0.9)),
+        median_clock_after=("clock_after", "median"),
+        )
 
+    return grouped
 
 def m5_opening_surgery(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """Group by opening family (from ECO code) + color: n_games, score %,
-    mean win% at ply 20, blunder rate in first 20 plies (spec section 5, M5).
-
-    Steps:
-    - derive opening_family from games["eco"] using ECO_FAMILY_MAP (map
-      the ECO prefix, e.g. games["eco"].str[0] for the letter, or a
-      range-based lookup for the two-char code -- decide precision level)
-    - group games by (opening_family, my_color): n_games, score % (mean
-      of result_for_me)
-    - win% at ply 20: needs a join back to moves, filtering ply == 20
-      (or nearest available) per game, averaging win_pct (my perspective)
-    - blunder rate first 20 plies: filter moves to ply <= 20 AND
-      is_my_move, group by game_id -> merge opening_family/color from
-      games, aggregate mean(move_quality == "blunder")
-    - assemble into one table indexed by (opening_family, color)
+    mean MY win% at ply 20, blunder rate in first 20 plies (spec section 5, M5).
     """
+
+    games_20plus = games[games["n_plies"] >= 20].copy()
+    games_20plus["opening_family"] = games_20plus["eco"].apply(eco_to_family)
+
+    game_stats = games_20plus.groupby(["opening_family", "my_color"]).agg(
+        n_games=("result_for_me", "count"),
+        score_pct=("result_for_me", "mean"),
+    )
+
+    games_map = games_20plus.set_index("game_id")
+    moves_20plus = moves[moves["game_id"].isin(games_20plus["game_id"])].copy()
+
+    moves_20plus["opening_family"] = moves_20plus["game_id"].map(
+        games_map["opening_family"]
+    )
+    moves_20plus["my_color"] = moves_20plus["game_id"].map(
+        games_map["my_color"]
+    )
+
+    my_win_pct = moves_20plus["win_pct"].where(
+        moves_20plus["is_my_move"], 100 - moves_20plus["win_pct"]
+    )
+    moves_20plus["my_win_pct"] = my_win_pct
+
+    ply20_stats = (
+        moves_20plus[moves_20plus["ply"] == 20]
+        .groupby(["opening_family", "my_color"])
+        .agg(mean_my_win_pct_ply20=("my_win_pct", "mean"))
+    )
+
+    early_my_moves = moves_20plus[
+        (moves_20plus["ply"] <= 20)
+        & (moves_20plus["is_my_move"])
+        & (moves_20plus["move_quality"].notna())
+    ]
+
+    blunder_stats = early_my_moves.groupby(
+        ["opening_family", "my_color"]
+    ).agg(
+        blunder_rate_first20=(
+            "move_quality",
+            lambda s: (s == "blunder").mean(),
+        )
+    )
+    return game_stats.join([ply20_stats, blunder_stats]).reset_index()
+
+if __name__ == "__main__":
+    moves = pd.read_parquet("data/processed/moves.parquet")
+    games = pd.read_parquet("data/processed/games.parquet")
+
+    print("--- M1 fatigue curve ---")
+    print(m1_fatigue_curve(moves, games).head(10))
+
+    print("\n--- M2 time to blunder ---")
+    print(m2_time_to_blunder(moves))
+
+    print("\n--- M3 greed conversion ---")
+    m3 = m3_greed_conversion(moves, games)
+    print(m3.head(10))
+    print("nombre de parties qualifiées :", len(m3))
+    print("Conversion rate:", m3["did_convert"].mean())
+    print("Median plies_to_finish:", m3["plies_to_finish"].median())
+    print("Median plies_to_finish (converted only):", m3[m3["did_convert"]]["plies_to_finish"].median())
+
+    print("\n--- M4 clock burn map ---")
+    m4 = m4_clock_burn_map(moves, games)
+    print(m4.head(10))
+    blitz = m4.loc["blitz"]
+    onset = blitz[blitz["median_clock_after"] < 36].index.min()
+    print("Time pressure onset (move number):", onset)
+
+    print("\n--- M5 opening surgery ---")
+    print(m5_opening_surgery(moves, games))
+
+    print("\n--- M1 retest: parties >= 40 plies uniquement ---")
+    games_40plus = games[games["n_plies"] >= 40]
+    moves_40plus = moves[moves["game_id"].isin(games_40plus["game_id"])]
+    print(m1_fatigue_curve(moves_40plus, games_40plus).head(15))
+
+    print("\n--- M5 retest: écart de niveau moyen par famille d'ouverture ---")
+    games["rating_diff"] = games["opp_rating"] - games["my_rating"]
+    opening_family = games["eco"].apply(eco_to_family)
+    print(games.groupby(opening_family)["rating_diff"].mean())
+
+    print(m1_fatigue_curve(moves_40plus, games_40plus).loc["blitz"])
