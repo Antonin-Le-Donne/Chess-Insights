@@ -33,50 +33,54 @@ def m1_fatigue_curve(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
 
     my_moves = moves[moves["is_my_move"]]
     move_bucket = ((my_moves["move_number"] // 5) * 5).rename("move_bucket")
-    perf_type = my_moves["game_id"].map(games.set_index("game_id")["perf_type"]).rename("perf_type")
+    perf_type = my_moves["game_id"].map(games.set_index("game_id")["perf_type"])
+    perf_group = perf_type.where(perf_type == "bullet", "main").rename("perf_group")
+
 
     game_duration = moves.groupby("game_id")["time_spent"].sum()
     tercile_per_game = pd.qcut(game_duration, q=3, labels=["short", "medium", "long"])
     duration_tercile = my_moves["game_id"].map(tercile_per_game).rename("duration_tercile")
 
-    grouped = my_moves.groupby([perf_type, move_bucket, duration_tercile]).agg(
-            mean_win_pct_delta=("win_pct_delta", "mean"),
-            blunder_rate=("move_quality", lambda s: (s == "blunder").mean()),
-            )
+    grouped = my_moves.groupby([perf_group, move_bucket, duration_tercile]).agg(
+        mean_win_pct_delta=("win_pct_delta", "mean"),
+        blunder_rate=("move_quality", lambda s: (s == "blunder").mean()),
+        )
 
     return grouped
 
 
-def m2_time_to_blunder(moves: pd.DataFrame) -> dict:
-    """P(blunder within my next 3 moves | long_think on current move) vs
-    baseline P(blunder), as a ratio WITH counts (spec section 5, M2).
-    """
-
+def m2_time_to_blunder(moves: pd.DataFrame, games: pd.DataFrame) -> dict:
     my_moves = moves[moves["is_my_move"]].sort_values(["game_id", "ply"])
     is_blunder = my_moves["move_quality"] == "blunder"
+    perf_type = my_moves["game_id"].map(games.set_index("game_id")["perf_type"]).rename("perf_type")
 
     next1 = is_blunder.groupby(my_moves["game_id"]).shift(-1)
     next2 = is_blunder.groupby(my_moves["game_id"]).shift(-2)
     next3 = is_blunder.groupby(my_moves["game_id"]).shift(-3)
-
-
     blunder_within_3 = next1.fillna(False) | next2.fillna(False) | next3.fillna(False)
 
-    baseline = is_blunder.mean()
-
-    p_given_long_think = blunder_within_3[my_moves["long_think"]].mean()
-    n_long_think = my_moves["long_think"].sum()
-    n_blunders_after = blunder_within_3[my_moves["long_think"]].sum()
-
-    ratio = p_given_long_think / baseline
-
-    return {
-        "ratio": ratio,
-        "p_given_long_think": p_given_long_think,
-        "baseline": baseline,
-        "n_long_think": n_long_think,
-        "n_blunders_after": n_blunders_after,
+    groups = {
+        "main": perf_type != "bullet",
+        "bullet": perf_type == "bullet",
     }
+
+    results = {}
+    for name, mask in groups.items():
+        baseline = is_blunder[mask].mean()
+        p_given_long_think = blunder_within_3[mask & my_moves["long_think"]].mean()
+        n_long_think = my_moves["long_think"][mask].sum()
+        n_blunders_after = blunder_within_3[mask & my_moves["long_think"]].sum()
+        ratio = p_given_long_think / baseline
+
+        results[name] = {
+            "ratio": ratio,
+            "p_given_long_think": p_given_long_think,
+            "baseline": baseline,
+            "n_long_think": n_long_think,
+            "n_blunders_after": n_blunders_after,
+        }
+
+    return results
 
 def m3_greed_conversion(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """Per game where my win% first reaches >= 80 ("winning point"):
@@ -105,15 +109,15 @@ def m4_clock_burn_map(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     move_number, split by perf_type (spec section 5, M4).
     """
     my_moves = moves[moves["is_my_move"]]
-    perf_type = my_moves["game_id"].map(
-        games.set_index("game_id")["perf_type"]
-        ).rename("perf_type")
+    perf_type = my_moves["game_id"].map(games.set_index("game_id")["perf_type"])
+    perf_group = perf_type.where(perf_type == "bullet", "main").rename("perf_group")
 
-    grouped = my_moves.groupby([perf_type, "move_number"]).agg(
-        median_time_spent=("time_spent", "median"),
-        p90_time_spent=("time_spent", lambda s: s.quantile(0.9)),
-        median_clock_after=("clock_after", "median"),
-        )
+
+    grouped = my_moves.groupby([perf_group, "move_number"]).agg(
+            median_time_spent=("time_spent", "median"),
+            p90_time_spent=("time_spent", lambda s: s.quantile(0.9)),
+            median_clock_after=("clock_after", "median"),
+            )
 
     return grouped
 

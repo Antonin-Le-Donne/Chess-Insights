@@ -68,3 +68,20 @@ and [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) for decisions and findings.
    either), but n=47 still gives a ±14-point 95% CI — not distinguishable
    from 50% on sample size alone. Kept as a hypothesis to watch, not a
    finding, pending more games.
+
+## Bullet analysis (planned, not started)
+
+All 5 findings above are blitz/rapid only — bullet was explicitly excluded
+from the v1 fetch (spec's own reasoning: "instinct-only games pollute the
+fatigue analysis"). Not included here because there's no data behind it yet,
+not because it's unimportant: **2,229 bullet games exist on Lichess alone**
+(more than blitz+rapid combined, 1,909), with more to come once chess.com is
+added. That's the majority of the full game history, not a side comparison.
+
+Plan (see `PROJECT_TRACKER.md` decisions log): fetch bullet + chess.com, then
+run a dedicated M1-M5 pass on bullet specifically rather than folding it into
+the existing blitz/rapid numbers above — `metrics.py` keeps bullet
+structurally separate (`"main"` vs `"bullet"`) everywhere, not mixed into a
+generic per-time-control split. Reportedly a stronger time control for this
+player than blitz/rapid, so the failure modes here are expected to differ,
+not just scale — worth its own findings section once real numbers exist.

@@ -1,5 +1,5 @@
 username = "DeltaKnight90"
-perf_types = ["blitz", "rapid"]
+perf_types = ["blitz", "rapid", "bullet"]
 
 [thresholds]
 blunder = 20
