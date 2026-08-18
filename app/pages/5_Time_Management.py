@@ -51,10 +51,10 @@ def main() -> None:
 
     perf_type_choice = st.selectbox(
         "Time control",
-        data["perf_type"].unique(),
+        data["perf_group"].unique(),
         key="m4_time_control",
     )
-    filtered = data[data["perf_type"] == perf_type_choice]
+    filtered = data[data["perf_group"] == perf_type_choice]
 
     tab1, tab2 = st.tabs(["Move duration", "Clock depletion"])
 
