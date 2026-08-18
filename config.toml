@@ -1,4 +1,5 @@
 username = "DeltaKnight90"
+chesscom_username = "AntoLDonne"
 perf_types = ["blitz", "rapid", "bullet"]
 
 [thresholds]

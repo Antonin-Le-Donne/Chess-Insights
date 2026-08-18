@@ -39,12 +39,22 @@ filled "How" column is a draft README finding — promote it.
 ## Findings
 
 Numbered, with numbers. These feed the README directly. (Full text in `README.md`.)
+Main (blitz+rapid) findings, revised on the full ~9,200-game Lichess+chess.com
+combined dataset — supersedes the 2026-08 baseline below.
 
-1. Fatigue curve: blunder rate ~0.4-0.5% (moves 0-4) → ~7% (moves 15-19, short games) — strong signal, survivorship bias not yet ruled out (see Blockers).
-2. Time→blunder signature confirmed: 3.8x ratio (14.6% vs 3.9% baseline), n=1,240 long-think instances.
-3. Conversion leak quantified: 74.5% conversion rate from win% ≥ 80 (n=1,155 games) — 1 in 4 "should-win" positions thrown. Median 27 plies to finish (24 for converted wins).
-4. Time pressure (move ~56 onset) and the fatigue inflection (move 10-15) are far apart — likely two separate failure modes, pending #1's robustness check.
-5. Opening mismatch hypothesis reversed, provisionally: Sicilian as Black scores 58.0% (n=182, good, not a weakness). Facing Sicilian as White scores 47.6% (n=185, not yet Elo-controlled). Facing Italian as Black scored 38.3% but n=47 gives a ±14pt 95% CI — downgraded to a hypothesis to watch, not a finding.
+1. Fatigue curve, revised: blunder rate ~0.3% (early) → peak **6.4-6.8% around move 15-20** → decline to ~1-2% by move 65-80. Peak moved earlier than the original ~move 30-40 estimate now that the survivorship-bias-controlled (n_plies≥40) and unfiltered curves agree on the same location. Complexity-vs-move-number test still not run.
+2. Time→blunder signature, stable under 3.5x the sample: 3.72x ratio (16.5% vs 4.4% baseline), n=4,414 long-think instances (730 followed by a blunder within 3 moves). Essentially unchanged from the 3.77x baseline estimate.
+3. Conversion leak, revised down: 70.7% conversion rate from win% ≥ 80 (n=7,024 games, up from n=1,155) — nearly 3 in 10 "should-win" positions thrown, a bigger leak than first estimated. Median 31 plies to finish (26 for converted wins).
+4. Time pressure (move ~67 onset) and the blunder peak (move 15-20) — the gap is wider than the original estimate (56 vs 30-40) suggested, reinforcing these as separate failure modes.
+5. Opening mismatch, reversed again: Sicilian as White is now 51.8% (n=613, up from n=185) — no longer a finding, essentially break-even. Italian as Black is now 45.0% (n=200, up from n=47, ±6.9pt 95% CI) — now the better-supported hypothesis of the two, still below 50%. Opponent-strength confound re-checked and still doesn't explain either number away (both sets of opponents weaker than my pool on average).
+
+Bullet findings (new, `perf_group == "bullet"`, 2,512 qualifying games for M3):
+
+B1. Sharper, earlier blunder peak than main: ~11.7% around move 15 vs ~6.8% for main — noisier estimate (smaller per-tercile samples), despite bullet being the player's strongest time control by peak rating.
+B2. Time→blunder ratio 3.82x (vs 3.72x main) — signature holds even under a compressed clock.
+B3. Conversion worse than main, not better: 67.3% (n=2,512) vs 70.7% — a real tension with the peak-rating gap. Median 32 plies to finish (28 for converted wins).
+B4. Time pressure onset at move 54 (vs 67 main) — expected from the shorter base clock, included as an M4 sanity check.
+B5 (M5, opening surgery) intentionally not computed — see Decisions log, kept merged with main by design.
 
 ## Results over time (chess-side tracking)
 
@@ -54,6 +64,8 @@ to a README "Results" section once there are 2+ months of data.
 | Month | Median plies_to_finish (M3) | Conversion rate from win% ≥ 80 | P(blunder \| long_think) / baseline (M2) | Fatigue inflection move (M1) |
 |---|---|---|---|---|
 | baseline (2026-08) | 27 | 74.5% | 3.77 | ~10-15 (tentative, pending survivorship retest) |
+| full dataset, main (2026-08) | 31 | 70.7% | 3.72 | ~15-20 (confirmed, filtered + unfiltered agree) |
+| full dataset, bullet (2026-08) | 32 | 67.3% | 3.82 | ~15 (rougher estimate, noisier buckets) |
 
 ## Session log
 

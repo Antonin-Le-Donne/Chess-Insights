@@ -18,15 +18,13 @@ from dotenv import load_dotenv
 
 LICHESS_GAMES_URL = "https://lichess.org/api/games/user/{username}"
 
-
 @dataclass
 class FetchConfig:
     """Everything the fetch needs, assembled from .env + config.toml."""
-
     username: str
+    chesscom_username: str
     perf_types: list[str]
     token: str | None
-    # TODO: any other config.toml fields that will appear in the future (rated-only? since?)
 
 
 def load_config(config_path: Path = Path("config.toml")) -> FetchConfig:
@@ -37,7 +35,7 @@ def load_config(config_path: Path = Path("config.toml")) -> FetchConfig:
     with open(config_path, "rb") as f:
         data = tomllib.load(f)
     
-    config = FetchConfig(username=data["username"], perf_types=data["perf_types"], token=token)
+    config = FetchConfig(username=data["username"],chesscom_username=data["chesscom_username"], perf_types=data["perf_types"], token=token)
 
     return config
     

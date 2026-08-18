@@ -21,7 +21,9 @@ ECO_FAMILY_MAP = [
 ]
 
 def eco_to_family(eco: str) -> str | None:
-    for lo,hi, name in ECO_FAMILY_MAP:
+    if pd.isna(eco):
+        return None
+    for lo, hi, name in ECO_FAMILY_MAP:
         if lo <= eco <= hi:
             return name
     return None
@@ -170,3 +172,65 @@ def m5_opening_surgery(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame
         )
     )
     return game_stats.join([ply20_stats, blunder_stats]).reset_index()
+
+
+"""if __name__ == "__main__":
+    moves = pd.read_parquet("data/processed/moves.parquet")
+    games = pd.read_parquet("data/processed/games.parquet")
+
+    print("--- M1 fatigue curve ---")
+    pd.set_option('display.max_rows', None)
+    games_40plus = games[games["n_plies"] >= 40]
+    moves_40plus = moves[moves["game_id"].isin(games_40plus["game_id"])]
+    print(m1_fatigue_curve(moves_40plus, games_40plus))
+    print(m1_fatigue_curve(moves, games))
+
+    print("\n--- M2 time to blunder ---")
+    m2 = m2_time_to_blunder(moves, games)
+    print(m2)
+
+    print("\n--- M3 greed conversion ---")
+    m3 = m3_greed_conversion(moves, games)
+    print(m3)
+    print("nombre de parties qualifiées :", len(m3))
+    print("Conversion rate:", m3["did_convert"].mean())
+    print("Median plies_to_finish:", m3["plies_to_finish"].median())
+    print("Median plies_to_finish (converted only):", m3[m3["did_convert"]]["plies_to_finish"].median())
+
+    m3_bullet = m3[m3["perf_type"] == "bullet"]
+    print("Bullet — nombre de parties qualifiées :", len(m3_bullet))
+    print("Bullet — Conversion rate:", m3_bullet["did_convert"].mean())
+    print("Bullet — Median plies_to_finish:", m3_bullet["plies_to_finish"].median())
+    print("Bullet — Median plies_to_finish (converted only):", m3_bullet[m3_bullet["did_convert"]]["plies_to_finish"].median())
+
+    print("\n--- M4 clock burn map ---")
+    m4 = m4_clock_burn_map(moves, games)
+    print(m4)
+    main_group = m4.loc["main"]
+    onset = main_group[main_group["median_clock_after"] < 36].index.min()
+    print("Time pressure onset (move number):", onset)
+
+    bullet_group = m4.loc["bullet"]
+    onset_bullet = bullet_group[bullet_group["median_clock_after"] < (0.10 * 60)].index.min()
+    print("Bullet — Time pressure onset (move number):", onset_bullet)
+
+    print("\n--- M5 opening surgery ---")
+    m5 = m5_opening_surgery(moves, games)
+    print(m5)
+
+    print("\n--- M1 retest: parties >= 40 plies uniquement ---")
+    games_40plus = games[games["n_plies"] >= 40]
+    moves_40plus = moves[moves["game_id"].isin(games_40plus["game_id"])]
+    print(m1_fatigue_curve(moves_40plus, games_40plus))
+
+    print("\n--- M5 retest: écart de niveau moyen par famille d'ouverture ---")
+    games["rating_diff"] = games["opp_rating"] - games["my_rating"]
+    opening_family = games["eco"].apply(eco_to_family)
+    print(games.groupby(opening_family)["rating_diff"].mean())
+
+    print("\n--- Comparaison rapide vs README actuel ---")
+    print("M2 ratio (main):", m2["main"]["ratio"], "  (README: 3.77)")
+    print("M3 conversion:", m3["did_convert"].mean(), "  (README: 0.745)")
+    print("M3 median plies:", m3["plies_to_finish"].median(), "  (README: 27.0)")
+    sicilian = m5[m5["opening_family"] == "Sicilian"]
+    print(sicilian[["my_color", "score_pct"]], "\n(README: black 58.0%, white 47.6%)")"""
