@@ -34,6 +34,7 @@ filled "How" column is a draft README finding — promote it.
 | 2026-08-04 | 82 positions missing `eval_cp` despite `evaluate.py` reporting 100% done | 2026-08-04 | Root cause: `has_server_evals` is an "any", not "all", check — see Decisions log. Fixed via a standalone script evaluating just the 82 missing positions directly with Stockfish, no pipeline rerun. |
 | 2026-08-04 | `perf_type` had inconsistent casing (`blitz`/`Blitz`) and a bogus `SuperBlitz` value | 2026-08-04 | Root cause: `parse.py` extracted `perf_type` from `Event` header text (`.split()[1]`), which has a different format for arena/tournament games (`"Daily SuperBlitz Arena"`) than regular rated games (`"rated blitz game"`). Patched `games.parquet["perf_type"]` directly by deriving it from `base_seconds`/`increment_seconds` instead (robust to header format). **`parse.py` itself still has the underlying bug** — will resurface on any future refetch; not yet patched in the source. |
 | 2026-08-04 | M1 fatigue curve: possible survivorship bias (games ending early are, by construction, games where someone already blundered) | 2026-08-04 | Retested restricted to `n_plies >= 40` games, full curve to move 95. Not a survivorship artifact, but not simple fatigue either: blunder rate rises to a peak ~5.5-6.5% around move 30-40, then declines through the endgame (~2% by move 65). Reframed as middlegame complexity, not battery drain. Tail past move 80 too sparse to trust (small n). |
+| 2026-08 | README's M3 "main" conversion figure (70.7%, n=7,024) was actually main+bullet blended, not main alone | 2026-08 | `m3_greed_conversion` was deliberately left unsplit by perf_group in `metrics.py` (post-hoc filterable by design); the post-hoc "exclude bullet" filter was skipped when the README numbers were first computed. Caught when the new `app/pages/10_Actual_Me.py` dashboard showed 72.6% for "Full history" and didn't match the documented 70.7%. Corrected to n=4,512, 72.6%, median plies 30/24. Bullet's own numbers were unaffected (already isolated correctly). |
 | 2026-08-04 | M5 opening surgery: possible Elo confound (stronger opponents may play the Sicilian more often, so the 47.6% "facing Sicilian as White" score may reflect opponent strength, not the opening) | 2026-08-04 | Checked mean `opp_rating - my_rating` per opening family. Sicilian ≈ -2.9, Italian ≈ -6.2 — opponents are *weaker* on average when playing these against me, not stronger. Confound doesn't explain the low scores away. Italian's n=47 remains too small regardless (±14pt CI), unrelated to this check. |
 
 ## Findings
@@ -44,7 +45,7 @@ combined dataset — supersedes the 2026-08 baseline below.
 
 1. Fatigue curve, revised: blunder rate ~0.3% (early) → peak **6.4-6.8% around move 15-20** → decline to ~1-2% by move 65-80. Peak moved earlier than the original ~move 30-40 estimate now that the survivorship-bias-controlled (n_plies≥40) and unfiltered curves agree on the same location. Complexity-vs-move-number test still not run.
 2. Time→blunder signature, stable under 3.5x the sample: 3.72x ratio (16.5% vs 4.4% baseline), n=4,414 long-think instances (730 followed by a blunder within 3 moves). Essentially unchanged from the 3.77x baseline estimate.
-3. Conversion leak, revised down: 70.7% conversion rate from win% ≥ 80 (n=7,024 games, up from n=1,155) — nearly 3 in 10 "should-win" positions thrown, a bigger leak than first estimated. Median 31 plies to finish (26 for converted wins).
+3. Conversion leak, revised down: 72.6% conversion rate from win% ≥ 80 (n=4,512 games, blitz+rapid, up from n=1,155) — more than 1 in 4 "should-win" positions thrown, a bigger leak than first estimated. Median 30 plies to finish (24 for converted wins). Correction (2026-08): an earlier pass reported 70.7%/n=7,024 for this row — that figure was actually main+bullet blended together, not main alone (`m3_greed_conversion` is deliberately unsplit by perf_group, and the post-hoc "main" filter was missed when first computed). Caught via a mismatch against the new Actual Me dashboard page.
 4. Time pressure (move ~67 onset) and the blunder peak (move 15-20) — the gap is wider than the original estimate (56 vs 30-40) suggested, reinforcing these as separate failure modes.
 5. Opening mismatch, reversed again: Sicilian as White is now 51.8% (n=613, up from n=185) — no longer a finding, essentially break-even. Italian as Black is now 45.0% (n=200, up from n=47, ±6.9pt 95% CI) — now the better-supported hypothesis of the two, still below 50%. Opponent-strength confound re-checked and still doesn't explain either number away (both sets of opponents weaker than my pool on average).
 
@@ -52,7 +53,7 @@ Bullet findings (new, `perf_group == "bullet"`, 2,512 qualifying games for M3):
 
 B1. Sharper, earlier blunder peak than main: ~11.7% around move 15 vs ~6.8% for main — noisier estimate (smaller per-tercile samples), despite bullet being the player's strongest time control by peak rating.
 B2. Time→blunder ratio 3.82x (vs 3.72x main) — signature holds even under a compressed clock.
-B3. Conversion worse than main, not better: 67.3% (n=2,512) vs 70.7% — a real tension with the peak-rating gap. Median 32 plies to finish (28 for converted wins).
+B3. Conversion worse than main, not better: 67.3% (n=2,512) vs 72.6% (corrected, see main finding #3) — a real tension with the peak-rating gap, a 5.3-point gap. Median 32 plies to finish (28 for converted wins).
 B4. Time pressure onset at move 54 (vs 67 main) — expected from the shorter base clock, included as an M4 sanity check.
 B5 (M5, opening surgery) intentionally not computed — see Decisions log, kept merged with main by design.
 
@@ -64,7 +65,7 @@ to a README "Results" section once there are 2+ months of data.
 | Month | Median plies_to_finish (M3) | Conversion rate from win% ≥ 80 | P(blunder \| long_think) / baseline (M2) | Fatigue inflection move (M1) |
 |---|---|---|---|---|
 | baseline (2026-08) | 27 | 74.5% | 3.77 | ~10-15 (tentative, pending survivorship retest) |
-| full dataset, main (2026-08) | 31 | 70.7% | 3.72 | ~15-20 (confirmed, filtered + unfiltered agree) |
+| full dataset, main (2026-08, corrected) | 30 | 72.6% | 3.72 | ~15-20 (confirmed, filtered + unfiltered agree) |
 | full dataset, bullet (2026-08) | 32 | 67.3% | 3.82 | ~15 (rougher estimate, noisier buckets) |
 
 ## Session log

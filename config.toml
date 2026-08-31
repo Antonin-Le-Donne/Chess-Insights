@@ -8,3 +8,11 @@ mistake = 10
 inaccuracy = 5
 time_pressure_pct = 0.10
 long_think_factor = 8
+
+[current_regime]
+# rating floor per "{platform}_{perf_type}"; groups absent here are excluded
+# entirely (2026-08 decision: rapid both platforms, chess.com blitz still
+# trending, not plateaued yet -- see PROJECT_TRACKER.md decisions log)
+lichess_blitz = 1700
+lichess_bullet = 1950
+chesscom_bullet = 1650

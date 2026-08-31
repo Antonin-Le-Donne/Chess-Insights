@@ -56,12 +56,13 @@ per-time-control split._
    followed by a blunder within 3 moves). Essentially unchanged from the
    original 3.77x on a sample 3.5x smaller.
 
-3. **Conversion leak quantified — bigger than first estimated.** Of 7,024
-   games where I reached a ≥80% win probability, only **70.7%** converted
-   to a win — nearly 3 in 10 "should-win" positions get thrown away.
-   Median plies to finish: 31 overall, 26 for converted wins. Revised down
-   from an initial 74.5%/1,155-game estimate — the larger, more
-   representative sample shows a bigger leak, not a smaller one.
+3. **Conversion leak quantified — bigger than first estimated.** Of 4,512
+   games (blitz+rapid) where I reached a ≥80% win probability, only
+   **72.6%** converted to a win — more than 1 in 4 "should-win" positions
+   get thrown away. Median plies to finish: 30 overall, 24 for converted
+   wins. Revised down from an initial 74.5%/1,155-game estimate — the
+   larger, more representative sample shows a bigger leak, not a smaller
+   one.
 
 4. **Time pressure and the mid-game blunder peak look like separate
    failure modes — the gap is wider than first thought.** Genuine time
@@ -109,10 +110,10 @@ opening numbers don't exist yet._
   isn't specific to having minutes to spare; it shows up even when the
   whole game lasts under a minute.
 - **Conversion is worse in bullet, not better — a real tension with the
-  strength gap.** 67.3% (n=2,512) vs 70.7% for main — despite the higher
-  peak rating in bullet, winning positions get thrown away slightly *more*
-  often here, not less. Median plies to finish: 32 (28 for converted
-  wins), both a touch longer than main's 31/26.
+  strength gap.** 67.3% (n=2,512) vs 72.6% for main — despite the higher
+  peak rating in bullet, winning positions get thrown away more often
+  here, not less, a 5.3-point gap. Median plies to finish: 32 (28 for
+  converted wins), both a touch longer than main's 30/24.
 - **Time pressure sets in far earlier, as expected from the clock alone.**
   Move 54, vs move 67 for main — a shorter base time (60s typical) makes
   this mechanical rather than surprising, included mainly as a sanity
