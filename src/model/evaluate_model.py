@@ -476,6 +476,7 @@ if __name__ == "__main__":
                 "pr_auc": baseline_metrics["pr_auc"],
                 "pr_auc_ci_lower": baseline_ci_lower,
                 "pr_auc_ci_upper": baseline_ci_upper,
+                "best_iteration": float("nan"),
             },
             {
                 "model": "lightgbm",
@@ -483,6 +484,7 @@ if __name__ == "__main__":
                 "pr_auc": lightgbm_metrics["pr_auc"],
                 "pr_auc_ci_lower": lightgbm_ci_lower,
                 "pr_auc_ci_upper": lightgbm_ci_upper,
+                "best_iteration": lightgbm_model.best_iteration_,
             },
         ]
     )
