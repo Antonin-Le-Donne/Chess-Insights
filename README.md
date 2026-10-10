@@ -59,7 +59,7 @@ per-time-control split._
    imported — it was 3.72x before; that bug only touched ~3.5% of the
    history, so every finding on this page held.)
 
-3. **Conversion leak quantified — bigger than first estimated.** Of 4,512
+3. **Conversion leak quantified — bigger than first estimated.** Of 4,510
    games (blitz+rapid) where I reached a ≥80% win probability, only
    **72.6%** converted to a win — more than 1 in 4 "should-win" positions
    get thrown away. Median plies to finish: 30 overall, 24 for converted

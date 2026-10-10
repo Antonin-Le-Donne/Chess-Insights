@@ -197,6 +197,19 @@ def m5_opening_surgery(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame
     print("Median plies_to_finish:", m3["plies_to_finish"].median())
     print("Median plies_to_finish (converted only):", m3[m3["did_convert"]]["plies_to_finish"].median())
 
+    m3_main = m3[m3["perf_type"] != "bullet"]
+
+    print("Main — nombre de parties qualifiées :", len(m3_main))
+    print("Main — Conversion rate:", m3_main["did_convert"].mean())
+    print(
+        "Main — Median plies_to_finish:",
+        m3_main["plies_to_finish"].median(),
+    )
+    print(
+        "Main — Median plies_to_finish (converted only):",
+        m3_main[m3_main["did_convert"]]["plies_to_finish"].median(),
+    )
+
     m3_bullet = m3[m3["perf_type"] == "bullet"]
     print("Bullet — nombre de parties qualifiées :", len(m3_bullet))
     print("Bullet — Conversion rate:", m3_bullet["did_convert"].mean())
@@ -226,11 +239,4 @@ def m5_opening_surgery(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame
     print("\n--- M5 retest: écart de niveau moyen par famille d'ouverture ---")
     games["rating_diff"] = games["opp_rating"] - games["my_rating"]
     opening_family = games["eco"].apply(eco_to_family)
-    print(games.groupby(opening_family)["rating_diff"].mean())
-
-    print("\n--- Comparaison rapide vs README actuel ---")
-    print("M2 ratio (main):", m2["main"]["ratio"], "  (README: 3.77)")
-    print("M3 conversion:", m3["did_convert"].mean(), "  (README: 0.745)")
-    print("M3 median plies:", m3["plies_to_finish"].median(), "  (README: 27.0)")
-    sicilian = m5[m5["opening_family"] == "Sicilian"]
-    print(sicilian[["my_color", "score_pct"]], "\n(README: black 58.0%, white 47.6%)")"""
+    print(games.groupby(opening_family)["rating_diff"].mean())"""
