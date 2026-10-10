@@ -107,7 +107,16 @@ def check_label_sanity(
     moves: pd.DataFrame,
     blunder_rate_min_samples: int,
 ) -> None:
-    """Raise if a source has enough rated moves but no blunders."""
+    """Raise if a source has enough rated moves but no blunders.
+    
+    Above blunder_rate_min_samples, a zero blunder rate is unexpected for
+    these games and suggests a label-generation bug. Stop before saving
+    potentially invalid labels, although this is not proof of a bug.
+
+    Motivated by the 2026-10-10 Lichess eval off-by-one incident:
+    evaluations after each move were used as evaluations before it,
+    corrupting move-quality labels and producing a zero blunder rate.
+    """
     rated_moves = moves[moves["move_quality"].notna()]
 
     stats = rated_moves.groupby("eval_source")["move_quality"].agg(

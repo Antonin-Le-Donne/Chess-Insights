@@ -8,6 +8,7 @@ a formality to skip past.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import joblib
@@ -138,6 +139,8 @@ def train_lightgbm(
     """Main model per spec. LightGBM handles NaN natively - unlike the
     baseline, no imputation/scaling needed here. Categorical features are
     already one-hot encoded by prepare_xy.
+    No class rebalancing is used to keep training aligned with unweighted
+    validation logloss (see the decisions log in PROJECT_TRACKER.md).
     """
 
     model = lgb.LGBMClassifier(
@@ -165,6 +168,36 @@ def train_lightgbm(
     )
 
     return model
+
+
+def check_early_stopping(
+    model,
+    best_iteration_warning_threshold: int,
+) -> None:
+    """Warn when early stopping selects unusually few boosting iterations.
+    A best_iteration_ of 0 is the sentinel for no active early stopping,
+    so it is excluded from this check.
+
+    Emit a warning rather than an exception because a low best iteration
+    can be legitimate when features contain little predictive signal.
+
+    Motivated by the 2026-10-08 incident: class rebalancing conflicted with
+    unweighted validation logloss, producing a one-tree model that went
+    undetected for two evaluation runs.
+    """
+    best_iteration = model.best_iteration_
+
+    if 0 < best_iteration < best_iteration_warning_threshold:
+        warnings.warn(
+            f"best_iteration_={best_iteration} is below "
+            f"best_iteration_warning_threshold={best_iteration_warning_threshold}. "
+            "Possible mismatch between the training objective and the early-stopping "
+            "metric (e.g. class rebalancing with unweighted validation logloss), "
+            "or features with little predictive signal. "
+            "Check class weighting, the validation metric, and feature quality.",
+            UserWarning,
+            stacklevel=2,
+    )
 
 
 if __name__ == "__main__":
@@ -223,6 +256,11 @@ if __name__ == "__main__":
         y_train,
         X_val,
         y_val,
+    )
+
+    check_early_stopping(
+        lightgbm_model,
+        config["thresholds"]["best_iteration_warning_threshold"],
     )
 
     model_dir = Path("models")
