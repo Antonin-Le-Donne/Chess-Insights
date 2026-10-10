@@ -103,6 +103,35 @@ def add_eval_state(moves: pd.DataFrame) -> pd.Series:
 
     return state_masked
 
+def check_label_sanity(
+    moves: pd.DataFrame,
+    blunder_rate_min_samples: int,
+) -> None:
+    """Raise if a source has enough rated moves but no blunders."""
+    rated_moves = moves[moves["move_quality"].notna()]
+
+    stats = rated_moves.groupby("eval_source")["move_quality"].agg(
+        count="count",
+        blunders=lambda qualities: (qualities == "blunder").sum(),
+    )
+
+    invalid_sources = stats[
+        (stats["count"] >= blunder_rate_min_samples)
+        & (stats["blunders"] == 0)
+    ]
+
+    if not invalid_sources.empty:
+        details = ", ".join(
+            f"{source}: {int(row['count'])} rated moves"
+            for source, row in invalid_sources.iterrows()
+        )
+        raise ValueError(
+            f"Blunder rate is 0 for: {details}. "
+            "Likely an eval_cp convention mismatch "
+            "(before vs after the move); check how this source is parsed."
+        )
+
+
 def main() -> None:
     with open("config.toml", "rb") as f:
         config_data = tomllib.load(f)
@@ -119,6 +148,7 @@ def main() -> None:
     moves["win_pct"] = add_win_pct(moves)
     moves["win_pct_delta"] = add_win_pct_delta(moves)
     moves["move_quality"] = add_move_quality(moves, thresholds)
+    check_label_sanity(moves, thresholds["blunder_rate_min_samples"])
     moves["phase"] = add_phase(moves)
     moves["time_pressure"] = add_time_pressure(moves, games, thresholds)
     moves["long_think"] = add_long_think(moves, thresholds)
