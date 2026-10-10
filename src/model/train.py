@@ -31,7 +31,6 @@ from src.scope import filter_current_regime
 # eval_source), and the target itself (move_quality, y).
 FEATURE_COLUMNS = [
     "move_number",
-    "ply",
     "phase",
     "rolling_time_mean_3",
     "previous_long_think",
