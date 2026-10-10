@@ -134,6 +134,7 @@ def train_lightgbm(
     y_train: pd.Series,
     X_val: pd.DataFrame,
     y_val: pd.Series,
+    random_state: int = 42,
 ):
     """Main model per spec. LightGBM handles NaN natively - unlike the
     baseline, no imputation/scaling needed here. Categorical features are
@@ -146,7 +147,7 @@ def train_lightgbm(
         objective="binary",
         n_estimators=1000,
         learning_rate=0.05,
-        random_state=42,
+        random_state=random_state,
         n_jobs=-1,
         feature_fraction=0.8,
         min_child_samples=10,
