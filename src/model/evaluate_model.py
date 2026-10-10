@@ -223,6 +223,96 @@ def bootstrap_pr_auc_ci(
     )
 
 
+def paired_bootstrap_pr_auc_diff(
+    proba_a: np.ndarray,
+    proba_b: np.ndarray,
+    y_test: pd.Series,
+    game_ids: pd.Series,
+    n_bootstrap: int = 1000,
+    ci: float = 0.95,
+) -> tuple[float, float, float, float]:
+    """Paired, game-level bootstrap of PR-AUC(A) - PR-AUC(B) on the same test rows.
+
+    Both models are scored on the SAME resampled games at each iteration, so
+    the shared "this sample is easy/hard" variation cancels in the difference
+    (Var(A-B) = Var(A) + Var(B) - 2 Cov(A, B)). Two separate CIs that overlap
+    say nothing about the difference; this does.
+
+    Returns (delta, lower, upper, proportion_a_better).
+    """
+    if not (len(proba_a) == len(proba_b) == len(y_test) == len(game_ids)):
+        raise ValueError(
+            "proba_a, proba_b, y_test and game_ids must have the same length"
+        )
+
+    y_array = y_test.to_numpy()
+    game_ids_array = game_ids.to_numpy()
+
+    delta = (
+        average_precision_score(y_array, proba_a)
+        - average_precision_score(y_array, proba_b)
+    )
+
+    unique_games = np.unique(game_ids_array)
+
+    game_positions = {
+        game_id: np.flatnonzero(game_ids_array == game_id)
+        for game_id in unique_games
+    }
+
+    rng = np.random.default_rng(42)
+    bootstrap_diffs = []
+
+    for _ in range(n_bootstrap):
+        sampled_games = rng.choice(
+            unique_games,
+            size=len(unique_games),
+            replace=True,
+        )
+
+        sampled_positions = np.concatenate(
+            [
+                game_positions[game_id]
+                for game_id in sampled_games
+            ]
+        )
+
+        y_bootstrap = y_array[sampled_positions]
+
+        score_a = average_precision_score(
+            y_bootstrap,
+            proba_a[sampled_positions],
+        )
+
+        score_b = average_precision_score(
+            y_bootstrap,
+            proba_b[sampled_positions],
+        )
+
+        bootstrap_diffs.append(score_a - score_b)
+
+    diffs_array = np.asarray(bootstrap_diffs)
+
+    alpha = (1 - ci) / 2
+
+    lower, upper = np.percentile(
+        diffs_array,
+        [
+            alpha * 100,
+            (1 - alpha) * 100,
+        ],
+    )
+
+    proportion_a_better = (diffs_array > 0).mean()
+
+    return (
+        float(delta),
+        float(lower),
+        float(upper),
+        float(proportion_a_better),
+    )
+
+
 def calibration_data(
     model,
     X_test: pd.DataFrame,
@@ -468,6 +558,39 @@ if __name__ == "__main__":
         )
     )
 
+    proba_lightgbm = lightgbm_model.predict_proba(X_test)[:, 1]
+    proba_baseline = baseline_model.predict_proba(X_test)[:, 1]
+
+    delta, lower, upper, proportion_a_better = paired_bootstrap_pr_auc_diff(
+        proba_a=proba_lightgbm,
+        proba_b=proba_baseline,
+        y_test=y_test,
+        game_ids=game_ids,
+    )
+
+    paired_summary = pd.DataFrame(
+        [
+            {
+                "model_a": "lightgbm",
+                "model_b": "baseline_logistic",
+                "pr_auc_delta": delta,
+                "ci_lower": lower,
+                "ci_upper": upper,
+                "proportion_a_better": proportion_a_better,
+            }
+        ]
+    )
+
+    print("\n=== Paired bootstrap: LightGBM - baseline ===")
+    print(paired_summary.to_string(index=False))
+
+    if lower > 0:
+        print("LightGBM clearly beats the baseline.")
+    elif upper < 0:
+        print("The baseline clearly beats LightGBM.")
+    else:
+        print("The CI includes 0: no clear difference.")
+
     metrics_summary = pd.DataFrame(
         [
             {
@@ -588,6 +711,11 @@ if __name__ == "__main__":
 
     shap_results.to_csv(
         output_dir / "shap_summary.csv",
+        index=False,
+    )
+
+    paired_summary.to_csv(
+        output_dir / "paired_bootstrap.csv",
         index=False,
     )
 
