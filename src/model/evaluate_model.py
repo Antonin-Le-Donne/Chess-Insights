@@ -68,9 +68,8 @@ def rebuild_test_set(feature_columns: list,) -> tuple[pd.DataFrame, pd.DataFrame
 
     floors = config["current_regime"]
 
-    time_pressure_pct = config[
-        "thresholds"
-    ]["time_pressure_pct"]
+    time_pressure_pct = config["thresholds"]["time_pressure_pct"]
+    long_think_factor = config["thresholds"]["long_think_factor"]
 
     games = pd.read_parquet(
         "data/processed/games.parquet"
@@ -90,6 +89,7 @@ def rebuild_test_set(feature_columns: list,) -> tuple[pd.DataFrame, pd.DataFrame
         moves_current,
         games_current,
         time_pressure_pct,
+        long_think_factor,
     )
 
     _, _, test = temporal_game_split(

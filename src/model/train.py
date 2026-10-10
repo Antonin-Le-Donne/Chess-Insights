@@ -206,6 +206,7 @@ if __name__ == "__main__":
 
     floors = config["current_regime"]
     time_pressure_pct = config["thresholds"]["time_pressure_pct"]
+    long_think_factor = config["thresholds"]["long_think_factor"]
 
     games = pd.read_parquet(
         "data/processed/games.parquet"
@@ -225,6 +226,8 @@ if __name__ == "__main__":
         moves_current,
         games_current,
         time_pressure_pct,
+        long_think_factor,
+        
     )
 
     train, val, test = temporal_game_split(

@@ -36,9 +36,16 @@ def add_target(moves: pd.DataFrame) -> pd.Series:
     return y
 
 
-def add_rolling_time_features(moves: pd.DataFrame) -> pd.DataFrame:
+def add_rolling_time_features(
+    moves: pd.DataFrame,
+    long_think_factor: float,
+) -> pd.DataFrame:
     """Rolling mean of MY last 3 time_spent values, previous time spent,
     and a long_think flag on the PREVIOUS move.
+
+    The flag uses a per-player expanding median including that previous
+    move, without future information. Keep NaN until five valid times
+    are available; otherwise use 1.0 for true and 0.0 for false.
     """
 
     original_index = moves.index
@@ -58,7 +65,7 @@ def add_rolling_time_features(moves: pd.DataFrame) -> pd.DataFrame:
             s.shift(1)
             .rolling(
                 3,
-                min_periods=1
+                min_periods=1,
             )
             .mean()
         )
@@ -68,12 +75,27 @@ def add_rolling_time_features(moves: pd.DataFrame) -> pd.DataFrame:
         "time_spent"
     ].shift(1)
 
-    moves_sorted["previous_long_think"] = (
-        groups["long_think"]
-        .shift(1)
-        .fillna(False)
-        .astype(bool)
+    cumulative_median = groups["time_spent"].transform(
+    # Five own-move observations match the opening cutoff (ply > 10);
+    # missing times or insufficient prior history still produce NaN.
+        lambda s: s.expanding(min_periods=5).median()
     )
+
+    moves_sorted["past_only_long_think"] = (
+        (
+            moves_sorted["time_spent"]
+            > long_think_factor * cumulative_median
+        )
+        .astype(float)
+        .where(
+            cumulative_median.notna()
+            & moves_sorted["time_spent"].notna()
+        )
+    )
+
+    moves_sorted["previous_long_think"] = moves_sorted.groupby(
+        ["game_id", "is_my_move"]
+    )["past_only_long_think"].shift(1)
 
     features = moves_sorted[
         [
@@ -309,11 +331,13 @@ def assemble_features(
     moves: pd.DataFrame,
     games: pd.DataFrame,
     time_pressure_pct: float,
+    long_think_factor: float,
 ) -> pd.DataFrame:
     """Join everything into one row-per-my-move feature table."""
 
     rolling_features = add_rolling_time_features(
-        moves
+        moves,
+        long_think_factor,
     )
 
     eval_volatility = add_eval_volatility(
