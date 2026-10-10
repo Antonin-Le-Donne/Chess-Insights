@@ -50,11 +50,14 @@ per-time-control split._
 
 2. **Time→blunder signature confirmed, stable under a much larger
    sample.** After a "long think" (>8x the game's median thinking time),
-   the probability of blundering within my next 3 moves is 16.5%, vs a
-   4.4% baseline (my overall blunder rate across all moves, all phases) —
-   a **3.72x ratio**, on a sample of 4,414 long-think instances (730
+   the probability of blundering within my next 3 moves is 17.2%, vs a
+   4.6% baseline (my overall blunder rate across all moves, all phases) —
+   a **3.75x ratio**, on a sample of 4,414 long-think instances (760
    followed by a blunder within 3 moves). Essentially unchanged from the
-   original 3.77x on a sample 3.5x smaller.
+   original 3.77x on a sample 3.5x smaller. (Rechecked in October 2026
+   after fixing an off-by-one in how Lichess server evaluations were
+   imported — it was 3.72x before; that bug only touched ~3.5% of the
+   history, so every finding on this page held.)
 
 3. **Conversion leak quantified — bigger than first estimated.** Of 4,512
    games (blitz+rapid) where I reached a ≥80% win probability, only
@@ -106,7 +109,7 @@ opening numbers don't exist yet._
   (smaller per-bucket samples within bullet's own duration terciles), so
   the magnitude is a rougher estimate than finding #1's.
 - **Time→blunder ratio holds up even under bullet's compressed clock.**
-  3.82x (vs 3.72x for main) — the "recalculate, then blunder" signature
+  3.84x (vs 3.75x for main) — the "recalculate, then blunder" signature
   isn't specific to having minutes to spare; it shows up even when the
   whole game lasts under a minute.
 - **Conversion is worse in bullet, not better — a real tension with the
