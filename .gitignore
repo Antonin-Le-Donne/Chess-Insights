@@ -224,3 +224,7 @@ data/
 
 stockfish/
 *.exe
+
+# Trained models — regenerable from data/ + src/model/, not source
+models/
+*.joblib
