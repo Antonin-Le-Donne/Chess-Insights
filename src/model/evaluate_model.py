@@ -356,9 +356,15 @@ def calibration_data(
     return calibration
 
 
-def shap_summary(model,X_train_sample: pd.DataFrame,) -> pd.DataFrame:
-    """SHAP feature importance for the LightGBM model, with one-hot encoded
-    categorical columns recombined into their original feature groups.
+def compute_shap_values(
+    model,
+    X_sample: pd.DataFrame,
+) -> np.ndarray:
+    """Compute SHAP values once and share them between feature ranking and
+    plots so both use exactly the same attributions.
+
+    Returns an array with shape (n_rows, n_columns) for the positive class
+    (blunder).
     """
 
     explainer = shap.TreeExplainer(
@@ -366,7 +372,7 @@ def shap_summary(model,X_train_sample: pd.DataFrame,) -> pd.DataFrame:
     )
 
     explanation = explainer(
-        X_train_sample
+        X_sample
     )
 
     shap_values = explanation.values
@@ -377,9 +383,68 @@ def shap_summary(model,X_train_sample: pd.DataFrame,) -> pd.DataFrame:
     if shap_values.ndim == 3:
         shap_values = shap_values[:, :, -1]
 
+    return np.asarray(
+        shap_values
+    )
+
+
+def save_shap_values(
+    shap_values: np.ndarray,
+    X_sample: pd.DataFrame,
+    test_raw: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Save feature values and their corresponding SHAP values to a Parquet
+    file, including game_id and ply to identify each move in its game.
+    """
+
+    metadata = test_raw.loc[
+        X_sample.index,
+        ["game_id", "ply"],
+    ]
+
+    shap_columns = [
+        f"shap_{column}"
+        for column in X_sample.columns
+    ]
+
+    shap_df = pd.DataFrame(
+        shap_values,
+        index=X_sample.index,
+        columns=shap_columns,
+    )
+
+    results = pd.concat(
+        [
+            metadata,
+            X_sample,
+            shap_df,
+        ],
+        axis=1,
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    results.to_parquet(
+        output_path,
+        index=False,
+    )
+
+
+def shap_summary(
+    shap_values: np.ndarray,
+    X_sample: pd.DataFrame,
+) -> pd.DataFrame:
+    """Calculate mean absolute SHAP importance for LightGBM, recombining
+    one-hot encoded categorical columns into their original feature groups.
+    """
+
     importance = pd.Series(
         np.abs(shap_values).mean(axis=0),
-        index=X_train_sample.columns,
+        index=X_sample.columns,
         name="mean_abs_shap",
     )
 
@@ -675,8 +740,13 @@ if __name__ == "__main__":
         random_state=42,
     )
 
-    shap_results = shap_summary(
+    shap_values = compute_shap_values(
         lightgbm_model,
+        shap_sample,
+    )
+
+    shap_results = shap_summary(
+        shap_values,
         shap_sample,
     )
 
@@ -692,6 +762,13 @@ if __name__ == "__main__":
     output_dir.mkdir(
         parents=True,
         exist_ok=True,
+    )
+
+    save_shap_values(
+        shap_values,
+        shap_sample,
+        test_raw,
+        output_dir / "shap_values.parquet",
     )
 
     metrics_summary.to_csv(
