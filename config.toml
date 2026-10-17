@@ -10,6 +10,10 @@ time_pressure_pct = 0.10
 long_think_factor = 8
 blunder_rate_min_samples = 1000
 best_iteration_warning_threshold = 10
+lost_pct = 20
+min_plies = 6
+cp_error_threshold = 200
+swing_to_pct = 40
 
 [current_regime]
 # rating floor per "{platform}_{perf_type}"; groups absent here are excluded

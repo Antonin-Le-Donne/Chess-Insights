@@ -12,7 +12,7 @@ greed in winning positions, and opening mismatches.
 - **v1 — pipeline + analytics dashboard: working, not complete.** Lichess +
   chess.com, blitz/rapid/bullet, ~11,251 games (~9,200 blitz+rapid, ~2,500+
   bullet after M3 filtering), evaluated with local Stockfish or Lichess
-  server evals. Metrics M1–M5 and their Streamlit pages are live; findings
+  server evals. Metrics M1–M6 and their Streamlit pages are live; findings
   below were re-checked in October 2026 after an eval-import bug fix.
 - **v2 — personal blunder-risk model: trained and evaluated.** LightGBM on
   the current rating regime, reproducible train/evaluate scripts, PR-AUC
@@ -25,8 +25,7 @@ and [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) for decisions and findings.
 ## Planned
 
 - **v2** — calibration plot on the model page; optional per-game risk timeline.
-- **v1** — M7 (time of day / session position), M6 (swindle profile),
-  sidebar filters, hover-to-game links, month-over-month M3 tracking on the
+- **v1** — M7 (time of day / session position), sidebar filters, hover-to-game links, month-over-month M3 tracking on the
   Overview page.
 - **Pipeline** — incremental parsing (append new games without rewriting
   existing Stockfish evaluations), then a refresh with the latest games.
@@ -102,6 +101,27 @@ per-time-control split._
    as much as for the chess: an opening-mismatch finding built on n<50
    should be labeled a hypothesis, not a result, until the sample says
    otherwise.
+
+6. **Swindle profile: a real edge from lost positions — and half of it is
+   the clock.** A game counts as "lost" once my win probability stays at or
+   below 20% for 3 full moves (6 consecutive plies); 2,938 games qualify.
+   From there I score **24.4%**, against an expected **14.0%** (the average
+   win probability at the start of the lost stretch) — **+10.4 points**.
+   That gap only means something next to a control group, so the exact same
+   rule was applied to my opponents' lost stretches: they beat the same
+   formula by just **+2.3 points** (n=2,722). The formula's calibration
+   (it is fitted on Lichess players overall, not on my rating) explains a
+   couple of points at most; the remaining **~8 points are mine**, against
+   rating-matched opponents. How the saves happen: a genuine turning point
+   (an opponent move lifting me from ≤20% to ≥40%) appears in only 25.4% of
+   lost games, and when it does I save **66.4%** of them; without one I
+   still save 14.9% — and **64% of those end on time**. Across all saves
+   from lost positions, about **half (48%) end on the clock** (38% even
+   when a turning point happened). The identity stat, quantified: I stay in
+   lost games long and fast enough for winning opponents to crack or flag.
+   Measured in win% swings and game results, not with the blunder label —
+   below 20% a "blunder" is impossible by definition, so the spec's
+   original label-based version would have read zero by construction.
 
 ## Bullet findings
 
