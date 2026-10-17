@@ -19,11 +19,15 @@ join.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+
 import chess
 import numpy as np
 import pandas as pd
 
 from src.metrics import eco_to_family
+from src.scope import filter_current_regime
 
 
 def add_target(moves: pd.DataFrame) -> pd.Series:
@@ -109,25 +113,31 @@ def add_rolling_time_features(
 
 
 def add_eval_volatility(moves: pd.DataFrame) -> pd.Series:
-    """Std of win_pct over the last 6 plies (both movers, not just mine) --
-    a cheap proxy for "how sharp/unstable is this position", independent of
-    whose move it is.
+    """Compute the standard deviation of win_pct over the current and
+    previous five plies, with every evaluation expressed from my perspective.
+
+    The current row is included because win_pct evaluates fen_before,
+    which is already known before the move and captures the latest position.
     """
+
     moves_sorted = moves.sort_values(
         ["game_id", "ply"]
     )
 
+    win_pct_mine = moves_sorted["win_pct"].where(
+        moves_sorted["is_my_move"],
+        100 - moves_sorted["win_pct"],
+    )
+
     volatility = (
-        moves_sorted
-        .groupby("game_id")["win_pct"]
+        win_pct_mine
+        .groupby(moves_sorted["game_id"])
         .transform(
             lambda s: (
-                s.shift(1)
-                .rolling(
+                s.rolling(
                     6,
-                    min_periods=2
-                )
-                .std()
+                    min_periods=2,
+                ).std()
             )
         )
     )
@@ -136,20 +146,18 @@ def add_eval_volatility(moves: pd.DataFrame) -> pd.Series:
 
 
 def add_previous_eval_and_clock(moves: pd.DataFrame,) -> pd.DataFrame:
-    """Pre-move eval and clock context: what the engine and clock showed
-    right BEFORE this move was played, not after. 
+    """Pre-move evaluation and clock context: the position evaluation and
+    remaining time available immediately before the move was played.
+    Evaluations are expressed from my perspective.
     """
 
     moves_sorted = moves.sort_values(
         ["game_id", "ply"]
     ).copy()
 
-    eval_before_move = (
-        moves_sorted
-        .groupby("game_id")["win_pct"]
-        .transform(
-            lambda s: 100 - s.shift(1)
-        )
+    eval_before_move = moves_sorted["win_pct"].where(
+        moves_sorted["is_my_move"],
+        100 - moves_sorted["win_pct"],
     )
 
     clock_before_move = (
@@ -370,6 +378,12 @@ def assemble_features(
         axis=1
     )
 
+    # TODO(label-floor): add a 4th condition -- keep only moves where a
+    #   blunder is POSSIBLE: eval_before_move >= the blunder threshold
+    #   (config.toml thresholds.blunder, passed in as a new parameter like
+    #   long_think_factor -- never a hardcoded 20). Below it, a drop of
+    #   >= threshold points is impossible by definition (0 blunders on 19,256
+    #   model rows, 22%); no positive is lost. Comment the WHY next to it.
     dataset = dataset[
         dataset["is_my_move"]
         & (dataset["ply"] > 10)
@@ -501,3 +515,150 @@ def temporal_game_split(
     ].copy()
 
     return train, val, test
+
+
+# Columns available after assemble_features that are used as model inputs.
+# Identifiers/metadata (game_id, san, uci, fen_before, date_utc, platform,
+# eval_source) and the target itself (move_quality, y) are deliberately excluded.
+FEATURE_COLUMNS = [
+    "move_number",
+    "phase",
+    "rolling_time_mean_3",
+    "previous_long_think",
+    "eval_volatility",
+    "material_count",
+    "material_imbalance",
+    "queens_on_board",
+    "n_legal_moves",
+    "hanging_pieces",
+    "checks_available",
+    "my_rating",
+    "rating_diff",
+    "perf_type",
+    "opening_family",
+    "eval_before_move",
+    "clock_before_move",
+    "time_pressure_before_move",
+    "eval_state_before_move",
+    "clock_before_move_pct",
+    "has_increment",
+    "previous_time_spent",
+]
+
+
+def prepare_xy(
+    dataset: pd.DataFrame,
+    reference_columns: pd.Index | None = None,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Slice FEATURE_COLUMNS + y out of one temporal split.
+
+    Categorical features are one-hot encoded. When reference_columns is
+    provided (for validation/test), columns are aligned to the training set
+    so unseen categories do not create incompatible feature shapes.
+    """
+
+    X = dataset[FEATURE_COLUMNS].copy()
+    y = dataset["y"].copy()
+
+    categorical_columns = [
+        "phase",
+        "perf_type",
+        "opening_family",
+        "eval_state_before_move",
+    ]
+
+    X = pd.get_dummies(
+        X,
+        columns=categorical_columns,
+        dtype=int,
+    )
+
+    if reference_columns is not None:
+        X = X.reindex(
+            columns=reference_columns,
+            fill_value=0,
+        )
+
+    return X, y
+
+
+@dataclass(frozen=True)
+class ModelSplits:
+    """Everything train / evaluate / ablation need, built ONE way.
+
+    Raw splits keep identifiers (game_id, ply, phase...) for slicing,
+    bootstrap grouping and SHAP metadata; X/y are model-ready, with val and
+    test columns aligned on train's one-hot columns.
+    """
+
+    train: pd.DataFrame
+    val: pd.DataFrame
+    test: pd.DataFrame
+    X_train: pd.DataFrame
+    y_train: pd.Series
+    X_val: pd.DataFrame
+    y_val: pd.Series
+    X_test: pd.DataFrame
+    y_test: pd.Series
+
+
+def load_model_splits(config: dict) -> ModelSplits:
+    """Single source of truth for the V2 data: parquet -> current-regime
+    filter -> assemble_features -> temporal split -> prepare_xy.
+
+    Replaces the block copied in train.py, evaluate_model.py and ablation.py
+    (tech debt, PROJECT_TRACKER 2026-10-10): three copies could silently
+    drift onto different data. `config` is the parsed config.toml, loaded
+    once by the caller (train.py still needs other keys from it).
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    processed_dir = project_root / "data" / "processed"
+
+    games = pd.read_parquet(
+        processed_dir / "games.parquet"
+    )
+    moves = pd.read_parquet(
+        processed_dir / "moves.parquet"
+    )
+
+    thresholds = config["thresholds"]
+
+    games_current, moves_current = filter_current_regime(
+        games,
+        moves,
+        config["current_regime"],
+    )
+
+    dataset = assemble_features(
+        moves_current,
+        games_current,
+        thresholds["time_pressure_pct"],
+        thresholds["long_think_factor"],
+    )
+
+    train, val, test = temporal_game_split(
+        dataset,
+        games_current,
+    )
+
+    X_train, y_train = prepare_xy(train)
+    X_val, y_val = prepare_xy(
+        val,
+        reference_columns=X_train.columns,
+    )
+    X_test, y_test = prepare_xy(
+        test,
+        reference_columns=X_train.columns,
+    )
+
+    return ModelSplits(
+        train=train,
+        val=val,
+        test=test,
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        X_test=X_test,
+        y_test=y_test,
+    )

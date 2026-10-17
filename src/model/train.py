@@ -8,6 +8,7 @@ a formality to skip past.
 
 from __future__ import annotations
 
+import tomllib
 import warnings
 from pathlib import Path
 
@@ -15,82 +16,12 @@ import joblib
 import lightgbm as lgb
 import pandas as pd
 import sklearn
-import tomllib
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from src.model.dataset import (
-    assemble_features,
-    temporal_game_split,
-)
-from src.scope import filter_current_regime
+from src.model.dataset import load_model_splits
 
-# Columns that exist on assemble_features's output but are NOT model inputs:
-# identifiers/metadata (game_id, san, uci, fen_before, date_utc, platform,
-# eval_source), and the target itself (move_quality, y).
-FEATURE_COLUMNS = [
-    "move_number",
-    "phase",
-    "rolling_time_mean_3",
-    "previous_long_think",
-    "eval_volatility",
-    "material_count",
-    "material_imbalance",
-    "queens_on_board",
-    "n_legal_moves",
-    "hanging_pieces",
-    "checks_available",
-    "my_rating",
-    "rating_diff",
-    "perf_type",
-    "opening_family",
-    "eval_before_move",
-    "clock_before_move",
-    "time_pressure_before_move",
-    "eval_state_before_move",
-    "clock_before_move_pct",
-    "has_increment",
-    "previous_time_spent",
-]
-
-def prepare_xy(dataset: pd.DataFrame,
-    reference_columns: pd.Index 
-    | None = None,) -> tuple[pd.DataFrame, pd.Series]:
-    """Slice FEATURE_COLUMNS + y out of one of temporal_game_split's three
-    outputs (train/val/test all go through this the same way).
-
-    Categorical features are one-hot encoded. When reference_columns is
-    provided (for val/test), columns are aligned to the training set so
-    unseen categories do not create incompatible feature shapes.
-    """
-
-    X = dataset[
-        FEATURE_COLUMNS
-    ].copy()
-
-    y = dataset["y"].copy()
-
-    categorical_columns = [
-        "phase",
-        "perf_type",
-        "opening_family",
-        "eval_state_before_move",
-    ]
-
-    X = pd.get_dummies(
-        X,
-        columns=categorical_columns,
-        dtype=int,
-    )
-
-    if reference_columns is not None:
-        X = X.reindex(
-            columns=reference_columns,
-            fill_value=0,
-        )
-
-    return X, y
 
 def train_baseline_logistic(X_train: pd.DataFrame,y_train: pd.Series,):
     """Logistic regression on scaled features -- the checkpoint per spec:
@@ -204,50 +135,17 @@ if __name__ == "__main__":
     with open("config.toml", "rb") as f:
         config = tomllib.load(f)
 
-    floors = config["current_regime"]
-    time_pressure_pct = config["thresholds"]["time_pressure_pct"]
-    long_think_factor = config["thresholds"]["long_think_factor"]
+    splits = load_model_splits(config)
 
-    games = pd.read_parquet(
-        "data/processed/games.parquet"
-    )
-
-    moves = pd.read_parquet(
-        "data/processed/moves.parquet"
-    )
-
-    games_current, moves_current = filter_current_regime(
-        games,
-        moves,
-        floors,
-    )
-
-    dataset = assemble_features(
-        moves_current,
-        games_current,
-        time_pressure_pct,
-        long_think_factor,
-        
-    )
-
-    train, val, test = temporal_game_split(
-        dataset,
-        games_current,
-    )
-
-    X_train, y_train = prepare_xy(
-        train
-    )
-
-    X_val, y_val = prepare_xy(
-        val,
-        reference_columns=X_train.columns,
-    )
-
-    X_test, y_test = prepare_xy(
-        test,
-        reference_columns=X_train.columns,
-    )
+    train = splits.train
+    val = splits.val
+    test = splits.test
+    X_train = splits.X_train
+    y_train = splits.y_train
+    X_val = splits.X_val
+    y_val = splits.y_val
+    X_test = splits.X_test
+    y_test = splits.y_test
 
     baseline_model = train_baseline_logistic(
         X_train,

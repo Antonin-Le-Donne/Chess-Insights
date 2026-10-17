@@ -16,17 +16,16 @@ decisions log) BEFORE any ablation run:
 from __future__ import annotations
 
 import json
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-import tomllib
 from sklearn.metrics import average_precision_score
 
-from src.model.dataset import assemble_features, temporal_game_split
+from src.model.dataset import load_model_splits
 from src.model.evaluate_model import paired_bootstrap_pr_auc_diff
-from src.model.train import prepare_xy, train_lightgbm
-from src.scope import filter_current_regime
+from src.model.train import train_lightgbm
 
 EPSILON = 0.002
 SEEDS = [42, 43, 44, 45, 46]
@@ -150,52 +149,11 @@ if __name__ == "__main__":
     with open("config.toml", "rb") as f:
         config = tomllib.load(f)
 
-    floors = config["current_regime"]
-    time_pressure_pct = config["thresholds"]["time_pressure_pct"]
-    long_think_factor = config["thresholds"]["long_think_factor"]
-
-    games = pd.read_parquet(
-        "data/processed/games.parquet"
-    )
-
-    moves = pd.read_parquet(
-        "data/processed/moves.parquet"
-    )
-
-    games_current, moves_current = filter_current_regime(
-        games,
-        moves,
-        floors,
-    )
-
-    dataset = assemble_features(
-        moves_current,
-        games_current,
-        time_pressure_pct,
-        long_think_factor,
-    )
-
-    train, val, test = temporal_game_split(
-        dataset,
-        games_current,
-    )
-
-    X_train, y_train = prepare_xy(train)
-
-    X_val, y_val = prepare_xy(
-        val,
-        reference_columns=X_train.columns,
-    )
-
-    X_test, y_test = prepare_xy(
-        test,
-        reference_columns=X_train.columns,
-    )
-
-    game_ids = test["game_id"]
+    splits = load_model_splits(config)
+    game_ids = splits.test["game_id"]
 
     dropped = columns_to_drop(
-        X_train.columns,
+        splits.X_train.columns,
         ABLATION_GROUP,
     )
 
@@ -206,12 +164,12 @@ if __name__ == "__main__":
 
         rows.append(
             run_one_seed(
-                X_train,
-                y_train,
-                X_val,
-                y_val,
-                X_test,
-                y_test,
+                splits.X_train,
+                splits.y_train,
+                splits.X_val,
+                splits.y_val,
+                splits.X_test,
+                splits.y_test,
                 game_ids,
                 dropped,
                 seed,

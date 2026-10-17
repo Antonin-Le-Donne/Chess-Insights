@@ -16,6 +16,7 @@ positives (~5% rate) is not a lot of ground to stand a precise metric on.
 
 from __future__ import annotations
 
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -23,12 +24,9 @@ import joblib
 import numpy as np
 import pandas as pd
 import shap
-import tomllib
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-from src.model.dataset import assemble_features, temporal_game_split
-from src.model.train import prepare_xy
-from src.scope import filter_current_regime
+from src.model.dataset import load_model_splits
 
 
 def load_models(model_dir: str = "models") -> dict:
@@ -55,54 +53,31 @@ def load_models(model_dir: str = "models") -> dict:
     }
 
 
-def rebuild_test_set(feature_columns: list,) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
-    """Reproduce train.py's exact test split: load data, filter_current_regime,
-    assemble_features, temporal_game_split, prepare_xy(test, reference_columns=
-    feature_columns). Returns (test_raw, X_test, y_test) -- test_raw keeps
-    game_id/phase/perf_type/etc. for slicing and game-level bootstrap grouping,
-    which X_test (one-hot encoded, no identifiers) doesn't carry.
+def rebuild_test_set(
+    feature_columns: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    """Reproduce train.py's exact test split using the shared loader.
+
+    Returns (test_raw, X_test, y_test). Checks that the freshly generated
+    training feature columns match the saved feature_columns.joblib exactly,
+    including their order, to detect models trained on different data/features.
     """
 
     with open("config.toml", "rb") as f:
         config = tomllib.load(f)
 
-    floors = config["current_regime"]
+    splits = load_model_splits(config)
 
-    time_pressure_pct = config["thresholds"]["time_pressure_pct"]
-    long_think_factor = config["thresholds"]["long_think_factor"]
+    if list(feature_columns) != list(splits.X_train.columns):
+        raise ValueError(
+            "Saved feature_columns.joblib does not match the freshly "
+            "generated training feature columns. The saved model may have "
+            "been trained on different data or features. "
+            f"Saved columns: {len(feature_columns)}; "
+            f"current columns: {len(splits.X_train.columns)}."
+        )
 
-    games = pd.read_parquet(
-        "data/processed/games.parquet"
-    )
-
-    moves = pd.read_parquet(
-        "data/processed/moves.parquet"
-    )
-
-    games_current, moves_current = filter_current_regime(
-        games,
-        moves,
-        floors,
-    )
-
-    dataset = assemble_features(
-        moves_current,
-        games_current,
-        time_pressure_pct,
-        long_think_factor,
-    )
-
-    _, _, test = temporal_game_split(
-        dataset,
-        games_current,
-    )
-
-    X_test, y_test = prepare_xy(
-        test,
-        reference_columns=pd.Index(feature_columns),
-    )
-
-    return test, X_test, y_test
+    return splits.test, splits.X_test, splits.y_test
 
 
 def auc_metrics(model,X_test: pd.DataFrame,y_test: pd.Series,) -> dict:
