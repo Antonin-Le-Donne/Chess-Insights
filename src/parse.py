@@ -10,6 +10,7 @@ import io
 import json
 import re
 from pathlib import Path
+import tempfile
 
 import chess.pgn
 import pandas as pd
@@ -287,44 +288,53 @@ def compute_time_spent(
     )
 
 
-def main() -> None:
-    """Parse raw files into games.parquet and moves.parquet.
+def parse_new_games(
+    config,
+    known_game_ids: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """Parse only raw games that are not already present in processed data.
 
-    This writes fresh outputs. Re-parsing with preservation of existing
-    Stockfish evaluations is handled by a separate script.
+    Walks all Lichess PGN files and chess.com JSON archives. Existing IDs are
+    checked before game_to_move_records(), which is the expensive step. IDs
+    parsed during this call are also remembered so duplicate raw entries are
+    not emitted twice.
     """
+    game_records: list[dict] = []
+    move_records: list[dict] = []
+    seen_game_ids = set(known_game_ids)
 
-    config = load_config()
-    username = config.username
-    platform = "lichess"
+    lichess_username = config.username
+    lichess_files = Path("data/raw/lichess").glob("*.pgn")
 
-    pgn_files = Path("data/raw/lichess").glob("*.pgn")
-
-    game_records = []
-    move_records = []
-
-    for pgn_file in pgn_files:
+    for pgn_file in lichess_files:
         for game in iter_games(pgn_file):
-            game_records.append(
-                game_to_record(
-                    game,
-                    username,
-                    platform,
-                )
+            game_id = f"lichess_{game.headers['GameId']}"
+            if game_id in seen_game_ids:
+                continue
+
+            game_record = game_to_record(
+                game,
+                lichess_username,
+                "lichess",
+            )
+            moves_for_game = game_to_move_records(
+                game,
+                lichess_username,
+                "lichess",
             )
 
-            move_records.extend(
-                game_to_move_records(
-                    game,
-                    username,
-                    platform,
-                )
-            )
+            game_records.append(game_record)
+            move_records.extend(moves_for_game)
+            seen_game_ids.add(game_id)
 
     chesscom_files = Path("data/raw/chesscom").glob("*.json")
 
     for json_path in chesscom_files:
         for game, external_id, time_class in iter_chesscom_games(json_path):
+            game_id = f"chesscom_{external_id}"
+            if game_id in seen_game_ids:
+                continue
+
             try:
                 game_record = game_to_record(
                     game,
@@ -341,20 +351,265 @@ def main() -> None:
                     external_game_id=external_id,
                 )
 
-            except (ValueError, KeyError) as e:
-                print(f"Skipping chess.com game {external_id}: {e}")
+            except (ValueError, KeyError) as exc:
+                print(f"Skipping chess.com game {external_id}: {exc}")
                 continue
 
             game_records.append(game_record)
             move_records.extend(moves_for_game)
+            seen_game_ids.add(game_id)
 
-    if not game_records:
-        print("Aucune partie trouvée.")
+    return game_records, move_records
+
+
+def load_existing(
+    processed_dir: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """Load the existing processed files, or return None on a first run.
+
+    moves.parquet already carries Stockfish evals (evaluate.py) and derived
+    columns (features.py): an incremental parse must never rewrite existing
+    rows. Every move must reference a game. A game may have no move rows only
+    when ``n_plies == 0``; for example, a draw by agreement can occur before
+    the first move. A game with ``n_plies > 0`` but no move rows indicates an
+    inconsistent or partially written processed-data state.
+    """
+    games_path = processed_dir / "games.parquet"
+    moves_path = processed_dir / "moves.parquet"
+
+    games_exists = games_path.is_file()
+    moves_exists = moves_path.is_file()
+
+    if not games_exists and not moves_exists:
+        return None
+
+    if games_exists != moves_exists:
+        raise FileNotFoundError(
+            "Incomplete processed-data state: both games.parquet and "
+            f"moves.parquet must exist in {processed_dir}. "
+            f"games.parquet exists: {games_exists}; "
+            f"moves.parquet exists: {moves_exists}."
+        )
+
+    games = pd.read_parquet(games_path)
+    moves = pd.read_parquet(moves_path)
+
+    if games["game_id"].duplicated().any():
+        raise ValueError(
+            "games.parquet contains duplicate game_id values."
+        )
+
+    if moves.duplicated(["game_id", "ply"]).any():
+        raise ValueError(
+            "moves.parquet contains duplicate (game_id, ply) rows."
+        )
+
+    if games["game_id"].isna().any():
+        raise ValueError("games.parquet contains null game_id values.")
+    if moves["game_id"].isna().any():
+        raise ValueError("moves.parquet contains null game_id values.")
+
+    game_ids = set(games["game_id"])
+    move_game_ids = set(moves["game_id"])
+    games_without_moves = game_ids - move_game_ids
+    moves_without_games = move_game_ids - game_ids
+
+    # Games with zero plies are valid without move rows (for example, a draw
+    # by agreement before the first move). All other games without move rows
+    # indicate incomplete or inconsistent processed data.
+    games_missing_moves_with_plies: set[str] = set()
+    if games_without_moves:
+        if "n_plies" not in games.columns:
+            raise ValueError(
+                "games.parquet is missing the n_plies column, so games without "
+                "move rows cannot be validated. Expected n_plies == 0 for "
+                "games that legitimately have no moves."
+            )
+
+        missing_move_rows = games.loc[
+            games["game_id"].isin(games_without_moves),
+            ["game_id", "n_plies"],
+        ]
+        n_plies = pd.to_numeric(
+            missing_move_rows["n_plies"],
+            errors="coerce",
+        )
+        # Allow only an explicit zero. Positive counts indicate missing move
+        # rows; null, non-numeric, or otherwise invalid counts cannot prove
+        # that a no-move game is legitimate either.
+        invalid_n_plies = n_plies.ne(0) | n_plies.isna()
+        games_missing_moves_with_plies = set(
+            missing_move_rows.loc[invalid_n_plies, "game_id"]
+        )
+
+    if games_missing_moves_with_plies or moves_without_games:
+        details = []
+        if games_missing_moves_with_plies:
+            sample_rows = games.loc[
+                games["game_id"].isin(games_missing_moves_with_plies),
+                ["game_id", "n_plies"],
+            ].head(10)
+            sample = sample_rows.to_dict(orient="records")
+            details.append(
+                "Present in games.parquet but absent from moves.parquet despite "
+                f"a non-zero or invalid n_plies value (up to 10): {sample}"
+            )
+        if moves_without_games:
+            sample = sorted(moves_without_games, key=str)[:10]
+            details.append(
+                "Present in moves.parquet but absent from games.parquet "
+                f"(up to 10): {sample}"
+            )
+
+        raise ValueError(
+            "Inconsistent processed-data state: every move must reference a "
+            "game, and every game with n_plies > 0 must have move rows. A game "
+            "with n_plies == 0 may legitimately be absent from moves.parquet "
+            "(for example, a draw by agreement before the first move). "
+            + " ".join(details)
+            + " Do not continue parsing until the files are reconciled."
+        )
+
+    return games, moves
+
+
+def append_new(
+    existing: pd.DataFrame,
+    new: pd.DataFrame,
+    key: list[str],
+) -> pd.DataFrame:
+    """Append new rows without changing any existing values.
+
+    Raises if the concatenated result contains duplicate keys or if the
+    existing rows differ after concatenation.
+    """
+    if not key:
+        raise ValueError("The append key cannot be empty.")
+
+    for column in key:
+        if column not in existing.columns:
+            raise KeyError(f"Existing DataFrame is missing key {column!r}.")
+        if column not in new.columns:
+            raise KeyError(f"New DataFrame is missing key {column!r}.")
+
+    result = pd.concat(
+        [existing, new],
+        ignore_index=True,
+    )
+
+    if result.duplicated(key).any():
+        duplicates = result.loc[
+            result.duplicated(key, keep=False),
+            key,
+        ].head(10)
+
+        raise ValueError(
+            "Duplicate keys detected after appending new rows. "
+            f"First duplicates:\n{duplicates.to_string(index=False)}"
+        )
+
+    # Confirm that every pre-existing column and value remains unchanged.
+    # New derived columns may be absent from `new`; concat fills those
+    # columns with NaN for the new rows without modifying old rows.
+    original_rows = result.iloc[:len(existing)][
+        existing.columns
+    ].reset_index(drop=True)
+
+    expected_rows = existing.reset_index(drop=True)
+
+    try:
+        pd.testing.assert_frame_equal(
+            original_rows,
+            expected_rows,
+            check_dtype=False,
+            check_like=False,
+        )
+    except AssertionError as exc:
+        raise AssertionError(
+            "Appending new rows changed existing data. "
+            "Do not write the processed files."
+        ) from exc
+
+    if len(result) != len(existing) + len(new):
+        raise AssertionError(
+            "Unexpected row count after appending new data."
+        )
+
+    return result
+
+
+def write_atomically(
+    df: pd.DataFrame,
+    path: Path,
+) -> None:
+    """Write to a temporary file next to path, then replace path.
+
+    A failed write leaves the previous destination file untouched.
+    """
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temp_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{path.stem}_",
+            suffix=path.suffix,
+            dir=path.parent,
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+
+        df.to_parquet(
+            temp_path,
+            index=False,
+        )
+
+        temp_path.replace(path)
+        temp_path = None
+
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+# TODO(incremental): optional `--full` flag (argparse) for a deliberate full
+# rebuild -- print loudly that it wipes Stockfish evals.
+# TODO(incremental): afterwards run evaluate.py (picks up the new games
+# without server evals, it already skips done ids) then features.py.
+def main() -> None:
+    """Incrementally parse raw games into games.parquet and moves.parquet.
+
+    Existing processed rows are retained. Only unseen game IDs are parsed and
+    appended, preserving existing Stockfish evaluations and derived columns.
+    """
+    config = load_config()
+    output_dir = Path("data/processed")
+
+    existing = load_existing(output_dir)
+
+    if existing is None:
+        known_game_ids: set[str] = set()
+    else:
+        existing_games_for_ids, _ = existing
+        known_game_ids = set(existing_games_for_ids["game_id"].astype(str))
+
+    new_game_records, new_move_records = parse_new_games(
+        config,
+        known_game_ids,
+    )
+
+    if not new_game_records:
+        print(
+            "Aucune nouvelle partie à ajouter. "
+            "Les fichiers traités restent inchangés."
+        )
         return
 
-    games = pd.DataFrame(game_records)
-    moves = pd.DataFrame(
-        move_records,
+    new_games = pd.DataFrame(new_game_records)
+    new_moves = pd.DataFrame(
+        new_move_records,
         columns=[
             "platform",
             "game_id",
@@ -370,24 +625,50 @@ def main() -> None:
         ],
     )
 
-    games["date_utc"] = pd.to_datetime(
-        games["date_utc"],
+    new_games["date_utc"] = pd.to_datetime(
+        new_games["date_utc"],
         format="%Y.%m.%d %H:%M:%S",
     )
-
-    moves["time_spent"] = compute_time_spent(moves, games)
-
-    output_dir = Path("data/processed")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    games.to_parquet(output_dir / "games.parquet")
-    moves.to_parquet(output_dir / "moves.parquet")
-
-    print(
-        f"Parsing finished: {len(games)} games "
-        f"and {len(moves)} moves saved."
+    new_moves["time_spent"] = compute_time_spent(
+        new_moves,
+        new_games,
     )
 
+    if existing is None:
+        games = new_games
+        moves = new_moves
+    else:
+        existing_games, existing_moves = existing
+        games = append_new(
+            existing_games,
+            new_games,
+            key=["game_id"],
+        )
+        moves = append_new(
+            existing_moves,
+            new_moves,
+            key=["game_id", "ply"],
+        )
+
+    # Write moves first. If the process stops before games.parquet is
+    # replaced, load_existing() will detect the mismatched game_id sets and
+    # stop loudly rather than silently losing the new moves.
+    write_atomically(
+        moves,
+        output_dir / "moves.parquet",
+    )
+    write_atomically(
+        games,
+        output_dir / "games.parquet",
+    )
+
+    print(
+        f"Parsing incrémental terminé : {len(new_games)} nouvelles parties "
+        f"et {len(new_moves)} nouveaux coups ajoutés."
+    )
+    print(
+        f"Total traité : {len(games)} parties et {len(moves)} coups."
+    )
 
 if __name__ == "__main__":
     main()
