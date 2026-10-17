@@ -340,6 +340,7 @@ def assemble_features(
     games: pd.DataFrame,
     time_pressure_pct: float,
     long_think_factor: float,
+    blunder_threshold: float,
 ) -> pd.DataFrame:
     """Join everything into one row-per-my-move feature table."""
 
@@ -354,16 +355,16 @@ def assemble_features(
 
     material_features = add_material_features(
         moves,
-        games
+        games,
     )
 
     complexity_features = add_complexity_features(
         moves,
-        games
+        games,
     )
 
     previous_eval_and_clock = add_previous_eval_and_clock(
-        moves
+        moves,
     )
 
     dataset = pd.concat(
@@ -375,19 +376,18 @@ def assemble_features(
             complexity_features,
             previous_eval_and_clock,
         ],
-        axis=1
+        axis=1,
     )
 
-    # TODO(label-floor): add a 4th condition -- keep only moves where a
-    #   blunder is POSSIBLE: eval_before_move >= the blunder threshold
-    #   (config.toml thresholds.blunder, passed in as a new parameter like
-    #   long_think_factor -- never a hardcoded 20). Below it, a drop of
-    #   >= threshold points is impossible by definition (0 blunders on 19,256
-    #   model rows, 22%); no positive is lost. Comment the WHY next to it.
+    # Keep only moves where a blunder is possible. Below the blunder
+    # threshold, a loss of at least that many points is impossible by
+    # definition. This removes rows with no possible positive label
+    # without discarding any actual blunders.
     dataset = dataset[
         dataset["is_my_move"]
         & (dataset["ply"] > 10)
         & dataset["move_quality"].notna()
+        & (dataset["eval_before_move"] >= blunder_threshold)
     ].copy()
 
     game_context = games[
@@ -406,7 +406,7 @@ def assemble_features(
     dataset = dataset.merge(
         game_context,
         on="game_id",
-        how="left"
+        how="left",
     )
 
     dataset["rating_diff"] = (
@@ -414,9 +414,7 @@ def assemble_features(
         - dataset["opp_rating"]
     )
 
-    dataset["opening_family"] = dataset[
-        "eco"
-    ].apply(
+    dataset["opening_family"] = dataset["eco"].apply(
         eco_to_family
     )
 
@@ -433,7 +431,7 @@ def assemble_features(
         / dataset["base_seconds"]
     ).replace(
         [np.inf, -np.inf],
-        np.nan
+        np.nan,
     )
 
     dataset["has_increment"] = (
@@ -457,7 +455,7 @@ def assemble_features(
     dataset["eval_state_before_move"] = np.select(
         conditions,
         choices,
-        default="lost"
+        default="lost",
     )
 
     dataset["y"] = add_target(
@@ -634,6 +632,7 @@ def load_model_splits(config: dict) -> ModelSplits:
         games_current,
         thresholds["time_pressure_pct"],
         thresholds["long_think_factor"],
+        thresholds["blunder"],
     )
 
     train, val, test = temporal_game_split(
