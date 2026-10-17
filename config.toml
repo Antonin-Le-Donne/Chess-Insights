@@ -22,3 +22,8 @@ swing_to_pct = 40
 lichess_blitz = 1700
 lichess_bullet = 1950
 chesscom_bullet = 1650
+
+[m7]
+timezone = "Europe/Paris"
+session_gap_minutes = 15
+max_game_index = 10

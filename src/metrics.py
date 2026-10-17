@@ -1,13 +1,17 @@
 """Core metrics (spec section 5) -- the calculations that ARE the project.
 
-Each function: pure, takes DataFrames (+ config where needed), returns a
+Metric functions take DataFrames (+ config where needed) and return a
 DataFrame/dict. One dashboard view per metric. Only operates on MY moves
 (is_my_move == True) unless the metric's own definition says otherwise.
 
-M1-M6 metrics. M7 remains planned (Milestone 4).
+``assign_sessions`` also prints a session-length sanity diagnostic.
+M1-M7 metrics.
 """
 
 from __future__ import annotations
+
+import tomllib
+from pathlib import Path
 
 import pandas as pd
 
@@ -622,6 +626,313 @@ def m6_swindle_profile(
     }
 
 
+
+def elo_expected_score(rating_diff: pd.Series) -> pd.Series:
+    """Expected score from the rating gap (my_rating - opp_rating).
+
+    Ratings can be pooled across platforms because each game's own and
+    opponent ratings come from the same platform; the within-game gap is
+    therefore meaningful even when the platforms use different rating scales.
+    """
+    return (1 / (1 + 10 ** (-rating_diff / 400))).rename("expected_score")
+
+
+def assign_sessions(
+    games: pd.DataFrame,
+    moves: pd.DataFrame,
+    gap_minutes: float,
+) -> pd.DataFrame:
+    """Assign every game to a cross-platform, cross-time-control session.
+
+    A game's end is estimated as its UTC start time plus the sum of
+    ``time_spent`` over all its moves. ``time_spent`` is measured in seconds;
+    games with no moves receive a zero-second duration. A new session starts
+    at the first game or when the gap between the previous estimated end and
+    the next game's start is at least ``gap_minutes``.
+
+    Returns one row per game with ``game_id``, ``session_id``, ``game_index``
+    (1-based), and ``previous_result`` (the preceding game's ``result_for_me``
+    within the same session, or NaN for the first game).
+
+    Prints a session-length distribution as a sanity check for duration-unit
+    mistakes that could otherwise merge hundreds of games into one session.
+    """
+    required_game_columns = {"game_id", "date_utc", "result_for_me"}
+    missing_game_columns = required_game_columns - set(games.columns)
+    if missing_game_columns:
+        raise KeyError(
+            "games is missing required columns: "
+            f"{sorted(missing_game_columns)}"
+        )
+
+    if not pd.notna(gap_minutes) or gap_minutes < 0:
+        raise ValueError("gap_minutes must be a non-negative number.")
+
+    if games["game_id"].isna().any():
+        raise ValueError("games contains a null game_id.")
+    if games["game_id"].duplicated().any():
+        raise ValueError("games must contain exactly one row per game_id.")
+
+    output_columns = [
+        "game_id",
+        "session_id",
+        "game_index",
+        "previous_result",
+    ]
+    if games.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    if not moves.empty:
+        missing_move_columns = {"game_id", "time_spent"} - set(moves.columns)
+        if missing_move_columns:
+            raise KeyError(
+                "moves is missing required columns: "
+                f"{sorted(missing_move_columns)}"
+            )
+        unknown_game_ids = ~moves["game_id"].isin(games["game_id"])
+        if unknown_game_ids.any():
+            unknown_ids = moves.loc[unknown_game_ids, "game_id"].drop_duplicates()
+            raise ValueError(
+                "moves contains game_id values absent from games: "
+                f"{unknown_ids.head(10).tolist()}"
+            )
+        durations_seconds = (
+            moves.assign(
+                _time_spent_seconds=pd.to_numeric(
+                    moves["time_spent"], errors="raise"
+                )
+            )
+            .groupby("game_id", sort=False)["_time_spent_seconds"]
+            .sum()
+        )
+    else:
+        durations_seconds = pd.Series(dtype="float64")
+
+    if durations_seconds.lt(0).any():
+        raise ValueError("A game's summed time_spent cannot be negative.")
+
+    session_games = games[["game_id", "result_for_me"]].copy()
+    # date_utc is stored naive UTC in the processed data. utc=True also
+    # handles already-aware timestamps without changing the represented instant.
+    session_games["date_utc"] = pd.to_datetime(
+        games["date_utc"], errors="raise", utc=True
+    )
+    if session_games["date_utc"].isna().any():
+        raise ValueError("games contains a missing date_utc; sessions cannot be inferred.")
+
+    session_games["_duration_seconds"] = (
+        session_games["game_id"].map(durations_seconds).fillna(0.0)
+    )
+    session_games["_estimated_end"] = (
+        session_games["date_utc"]
+        + pd.to_timedelta(session_games["_duration_seconds"], unit="s")
+    )
+    session_games = session_games.sort_values(
+        "date_utc", kind="stable"
+    ).reset_index(drop=True)
+
+    previous_end = session_games["_estimated_end"].shift(1)
+    gap = session_games["date_utc"] - previous_end
+    starts_new_session = previous_end.isna() | gap.ge(
+        pd.Timedelta(minutes=gap_minutes)
+    )
+    session_games["session_id"] = starts_new_session.cumsum().astype(int)
+    session_games["game_index"] = (
+        session_games.groupby("session_id", sort=False).cumcount() + 1
+    )
+    session_games["previous_result"] = session_games.groupby(
+        "session_id", sort=False
+    )["result_for_me"].shift(1)
+
+    session_lengths = session_games.groupby("session_id", sort=False).size()
+    distribution = session_lengths.value_counts().sort_index()
+    print("Session-length distribution (games per session -> number of sessions):")
+    print(distribution.rename_axis("games_per_session").to_string())
+    print(
+        f"Total sessions: {len(session_lengths)}; "
+        f"longest session: {int(session_lengths.max())} games."
+    )
+
+    return session_games[output_columns].reset_index(drop=True)
+
+
+def m7_time_and_session(
+    moves: pd.DataFrame,
+    games: pd.DataFrame,
+    timezone: str,
+    gap_minutes: float,
+    max_game_index: int,
+) -> dict[str, pd.DataFrame]:
+    """M7 -- time of day and session position (spec section 5, M7).
+
+    Each table reports, per group, game count, actual score (mean
+    ``result_for_me``), Elo-expected score, actual minus expected score, and
+    my blunder rate on moves with a known ``move_quality`` plus its move count.
+
+    Returns ``by_hour`` (local start hour), ``by_game_index`` (session position,
+    with the final bucket labelled ``N+``), and ``after_previous`` (first game,
+    or after a win, draw, or loss in the same session). Sessions span platforms
+    and time controls because they track my playing sequence, not a single site.
+    """
+    required_game_columns = {
+        "game_id", "date_utc", "result_for_me", "my_rating", "opp_rating"
+    }
+    required_move_columns = {"game_id", "is_my_move", "move_quality"}
+    missing_game_columns = required_game_columns - set(games.columns)
+    missing_move_columns = required_move_columns - set(moves.columns)
+    if missing_game_columns:
+        raise KeyError(
+            "games is missing required columns: "
+            f"{sorted(missing_game_columns)}"
+        )
+    if missing_move_columns:
+        raise KeyError(
+            "moves is missing required columns: "
+            f"{sorted(missing_move_columns)}"
+        )
+    if max_game_index < 1:
+        raise ValueError("max_game_index must be at least 1.")
+
+    session_info = assign_sessions(games, moves, gap_minutes)
+    grouped_games = games.copy()
+    utc_starts = pd.to_datetime(grouped_games["date_utc"], errors="raise", utc=True)
+    grouped_games["local_hour"] = utc_starts.dt.tz_convert(timezone).dt.hour
+    grouped_games["expected_score"] = elo_expected_score(
+        grouped_games["my_rating"] - grouped_games["opp_rating"]
+    )
+    grouped_games = grouped_games.merge(
+        session_info,
+        on="game_id",
+        how="left",
+        validate="one_to_one",
+    )
+
+    index_labels = grouped_games["game_index"].astype("Int64").astype(str)
+    grouped_games["game_index_bucket"] = index_labels
+    grouped_games.loc[
+        grouped_games["game_index"].ge(max_game_index),
+        "game_index_bucket",
+    ] = f"{max_game_index}+"
+
+    previous_result = grouped_games["previous_result"]
+    after_previous = pd.Series("after other", index=grouped_games.index, dtype="object")
+    after_previous.loc[previous_result.isna()] = "first game"
+    after_previous.loc[previous_result.eq(1)] = "after win"
+    after_previous.loc[previous_result.eq(0.5)] = "after draw"
+    after_previous.loc[previous_result.eq(0)] = "after loss"
+    grouped_games["after_previous"] = after_previous
+
+    # Build move and game aggregates separately: games and rated moves have
+    # different denominators, and joining raw moves first would inflate n_games.
+    rated_my_moves = moves.loc[
+        moves["is_my_move"].fillna(False).astype(bool)
+        & moves["move_quality"].notna(),
+        ["game_id", "move_quality"],
+    ].copy()
+    rated_my_moves["_is_blunder"] = rated_my_moves["move_quality"].eq("blunder")
+
+    def _build_group_table(group_column: str) -> pd.DataFrame:
+        game_stats = (
+            grouped_games.groupby(group_column, as_index=False, dropna=False)
+            .agg(
+                n_games=("game_id", "size"),
+                score=("result_for_me", "mean"),
+                expected_score=("expected_score", "mean"),
+            )
+        )
+
+        move_groups = rated_my_moves.merge(
+            grouped_games[["game_id", group_column]],
+            on="game_id",
+            how="inner",
+            validate="many_to_one",
+        )
+        move_stats = (
+            move_groups.groupby(group_column, as_index=False, dropna=False)
+            .agg(
+                n_moves=("move_quality", "size"),
+                blunder_rate=("_is_blunder", "mean"),
+            )
+        )
+
+        table = game_stats.merge(
+            move_stats,
+            on=group_column,
+            how="left",
+            validate="one_to_one",
+        )
+        table["n_moves"] = table["n_moves"].fillna(0).astype(int)
+        table["score_vs_expected"] = table["score"] - table["expected_score"]
+        return table[
+            [
+                group_column,
+                "n_games",
+                "score",
+                "expected_score",
+                "score_vs_expected",
+                "blunder_rate",
+                "n_moves",
+            ]
+        ]
+
+    by_hour = _build_group_table("local_hour").sort_values(
+        "local_hour", kind="stable"
+    ).reset_index(drop=True)
+
+    by_game_index = _build_group_table("game_index_bucket")
+    if not by_game_index.empty:
+        by_game_index["_sort_index"] = pd.to_numeric(
+            by_game_index["game_index_bucket"].str.rstrip("+"), errors="raise"
+        )
+        by_game_index = (
+            by_game_index.sort_values("_sort_index", kind="stable")
+            .drop(columns="_sort_index")
+            .reset_index(drop=True)
+        )
+
+    by_previous = _build_group_table("after_previous")
+    previous_order = {
+        "first game": 0,
+        "after win": 1,
+        "after draw": 2,
+        "after loss": 3,
+        "after other": 4,
+    }
+    if not by_previous.empty:
+        by_previous["_sort_order"] = by_previous["after_previous"].map(
+            previous_order
+        ).fillna(len(previous_order))
+        by_previous = (
+            by_previous.sort_values("_sort_order", kind="stable")
+            .drop(columns="_sort_order")
+            .reset_index(drop=True)
+        )
+
+    return {
+        "by_hour": by_hour,
+        "by_game_index": by_game_index,
+        "after_previous": by_previous,
+    }
+
+
+
+def load_m7_settings(config_path: Path | None = None) -> tuple[str, float, int]:
+    """Load M7 parameters from the project's single config.toml source."""
+    if config_path is None:
+        config_path = Path(__file__).resolve().parents[1] / "config.toml"
+
+    with config_path.open("rb") as file:
+        config = tomllib.load(file)
+
+    settings = config["m7"]
+    return (
+        str(settings["timezone"]),
+        float(settings["session_gap_minutes"]),
+        int(settings["max_game_index"]),
+    )
+
+
+
 if __name__ == "__main__":
     moves = pd.read_parquet("data/processed/moves.parquet")
     games = pd.read_parquet("data/processed/games.parquet")
@@ -712,3 +1023,25 @@ if __name__ == "__main__":
     print(m6["opportunities"].to_string(index=False))
     print("\nM6 — Saved games by termination and opportunity")
     print(m6["saves_by_termination"].to_string(index=False))
+
+    print("\n--- M7 time of day and session position ---")
+    timezone, gap_minutes, max_game_index = load_m7_settings()
+    print(
+        "M7 settings: "
+        f"timezone={timezone}, "
+        f"session_gap_minutes={gap_minutes:g}, "
+        f"max_game_index={max_game_index}"
+    )
+    m7 = m7_time_and_session(
+        moves,
+        games,
+        timezone=timezone,
+        gap_minutes=gap_minutes,
+        max_game_index=max_game_index,
+    )
+    print("\nM7 — By local hour")
+    print(m7["by_hour"].to_string(index=False))
+    print("\nM7 — By game index within session")
+    print(m7["by_game_index"].to_string(index=False))
+    print("\nM7 — By result of the previous game")
+    print(m7["after_previous"].to_string(index=False))

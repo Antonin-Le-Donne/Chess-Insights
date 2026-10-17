@@ -12,7 +12,7 @@ greed in winning positions, and opening mismatches.
 - **v1 — pipeline + analytics dashboard: working, not complete.** Lichess +
   chess.com, blitz/rapid/bullet, ~11,251 games (~9,200 blitz+rapid, ~2,500+
   bullet after M3 filtering), evaluated with local Stockfish or Lichess
-  server evals. Metrics M1–M6 and their Streamlit pages are live; findings
+  server evals. Metrics M1–M7 and their Streamlit pages are live; findings
   below were re-checked in October 2026 after an eval-import bug fix.
 - **v2 — personal blunder-risk model: trained and evaluated.** LightGBM on
   the current rating regime, reproducible train/evaluate scripts, PR-AUC
@@ -25,7 +25,7 @@ and [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) for decisions and findings.
 ## Planned
 
 - **v2** — calibration plot on the model page; optional per-game risk timeline.
-- **v1** — M7 (time of day / session position), sidebar filters, hover-to-game links, month-over-month M3 tracking on the
+- **v1** — sidebar filters, hover-to-game links, month-over-month M3 tracking on the
   Overview page.
 - **Pipeline** — incremental parsing (append new games without rewriting
   existing Stockfish evaluations), then a refresh with the latest games.
@@ -122,6 +122,28 @@ per-time-control split._
    Measured in win% swings and game results, not with the blunder label —
    below 20% a "blunder" is impossible by definition, so the spec's
    original label-based version would have read zero by construction.
+
+7. **Time of day and session position: no fatigue, no "tilt queue" —
+   just a little momentum after wins.** All 11,482 games, local time
+   (Europe/Paris), a new session after a 15-minute break measured from the
+   estimated end of the previous game. Every group is read as score minus
+   the Elo-expected score from the rating gap, so a stronger late-night pool
+   cannot pass for fatigue. Reference point: I beat the Elo expectation by
+   **+2.2 points overall** (ratings lag an improving player), so +2 is
+   "normal", not 0. **Hour of day: no detectable effect** — hourly gaps
+   spread from about −3.5 to +7.5 points, but each hour holds only ~100–450
+   games (a ±4–8 point 95% interval), and the blunder rate stays flat at
+   ~4–5.5%. **Fatigue: none** — game 1 through game 10+ of a session moves
+   between −1.5 and +4.4 points with no trend, blunder rate 4.6–5.0%
+   throughout. **Previous result: a small effect.** After a win +3.6 points
+   (n=4,858), first game of a session +1.2 (n=1,854), after a loss +0.8
+   (n=4,277); blunder rate 4.7% after a win vs 5.0% after a loss. The
+   win-vs-loss gap (~2.8 points) is about 2.8 standard errors, so likely
+   real but small — and since "after a loss" sits at the same level as a
+   fresh session start, the honest reading is *I play slightly better after
+   a win*, not *I collapse after a loss*. Observational: a loss often
+   follows a hard game, and a win raises my rating and therefore the
+   opponent pool.
 
 ## Bullet findings
 
