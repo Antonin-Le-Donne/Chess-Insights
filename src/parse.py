@@ -10,6 +10,7 @@ import argparse
 import io
 import json
 import re
+from collections import Counter
 from pathlib import Path
 import tempfile
 
@@ -32,13 +33,44 @@ def iter_games(pgn_path: Path):
             yield game
 
 
-def iter_chesscom_games(json_path: Path):
-    """Yield (game, external_id, time_class) tuples from a JSON archive."""
+def chesscom_skip_reason(game_obj: dict, perf_types: list[str] | None) -> str | None:
+    """Why a chess.com archive entry is out of scope, or None to keep it.
+
+    Spec section 1: rated games of standard chess in the configured time
+    classes only. The archive also holds variants (oddschess, chess960...),
+    unrated games and daily games; the Lichess export already excludes them
+    (rated=true, perfType).
+    """
+    if game_obj.get("rules") != "chess":
+        return f"variant ({game_obj.get('rules')})"
+    if not game_obj.get("rated", False):
+        return "unrated"
+    if perf_types is not None and game_obj.get("time_class") not in perf_types:
+        return f"time class ({game_obj.get('time_class')})"
+    return None
+
+
+def iter_chesscom_games(
+    json_path: Path,
+    perf_types: list[str] | None = None,
+    skipped: Counter | None = None,
+):
+    """Yield (game, external_id, time_class) tuples from a JSON archive.
+
+    Out-of-scope entries (chesscom_skip_reason) are not yielded; their
+    reasons are counted in `skipped` when one is given.
+    """
 
     with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
 
     for game_obj in data["games"]:
+        reason = chesscom_skip_reason(game_obj, perf_types)
+        if reason is not None:
+            if skipped is not None:
+                skipped[reason] += 1
+            continue
+
         pgn_text = game_obj["pgn"]
         game = chess.pgn.read_game(io.StringIO(pgn_text))
 
@@ -329,9 +361,12 @@ def parse_new_games(
             seen_game_ids.add(game_id)
 
     chesscom_files = Path("data/raw/chesscom").glob("*.json")
+    skipped: Counter = Counter()
 
     for json_path in chesscom_files:
-        for game, external_id, time_class in iter_chesscom_games(json_path):
+        for game, external_id, time_class in iter_chesscom_games(
+            json_path, config.perf_types, skipped
+        ):
             game_id = f"chesscom_{external_id}"
             if game_id in seen_game_ids:
                 continue
@@ -359,6 +394,10 @@ def parse_new_games(
             game_records.append(game_record)
             move_records.extend(moves_for_game)
             seen_game_ids.add(game_id)
+
+    if skipped:
+        details = ", ".join(f"{reason}: {n}" for reason, n in skipped.most_common())
+        print(f"chess.com archive entries out of scope, not parsed: {details}")
 
     return game_records, move_records
 
