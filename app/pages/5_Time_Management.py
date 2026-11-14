@@ -10,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.filters import sidebar_filtered
 from app.ui import load_ui
 from src.metrics import m4_clock_burn_map
 
@@ -46,7 +47,7 @@ def main() -> None:
         """
     )
 
-    games, moves = load_data()
+    games, moves = sidebar_filtered(*load_data())
     data = m4_clock_burn_map(moves, games).reset_index()
 
     perf_type_choice = st.selectbox(
@@ -71,7 +72,7 @@ def main() -> None:
             },
         )
         fig1.update_layout(**PLOTLY_LAYOUT.to_plotly_json())
-        st.plotly_chart(fig1, use_container_width=True)
+        st.plotly_chart(fig1, width="stretch")
 
     with tab2:
         fig2 = px.line(
@@ -85,7 +86,7 @@ def main() -> None:
             },
         )
         fig2.update_layout(**PLOTLY_LAYOUT.to_plotly_json())
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     st.markdown("### What this tells me")
     st.markdown(

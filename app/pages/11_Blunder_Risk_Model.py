@@ -10,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.filters import game_url, render_filters_not_applied, selected_points
 from app.ui import load_ui
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -178,7 +179,7 @@ def plot_calibration(calibration: pd.DataFrame) -> None:
         scaleratio=1,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def prepare_plot_data(
@@ -343,6 +344,9 @@ load_ui()
 
 def main() -> None:
     st.title("V2 — Blunder Risk Model")
+    render_filters_not_applied(
+        "the model is evaluated once, on a fixed chronological test set."
+    )
 
     st.markdown(
         """
@@ -478,7 +482,7 @@ def main() -> None:
 
     st.plotly_chart(
         bar_fig,
-        use_container_width=True,
+        width="stretch",
         config={
             "displayModeBar": False,
             "responsive": True,
@@ -668,17 +672,28 @@ def main() -> None:
         ),
     )
 
-    st.plotly_chart(
+    event = st.plotly_chart(
         fig,
-        use_container_width=True,
+        width="stretch",
         config={
             "displayModeBar": False,
             "responsive": True,
         },
+        on_select="rerun",
+        selection_mode="points",
+        key="shap_dependence_chart",
     )
 
+    points = selected_points(event)
+    if points and points[0].get("customdata"):
+        game_id, ply = points[0]["customdata"][:2]
+        # Open the board BEFORE the move: the model predicts from that position.
+        url = game_url(game_id, ply=int(ply) - 1)
+        st.markdown(f"Selected move: [{game_id}, half-move {int(ply)}]({url})")
+
     st.caption(
-        "Hover over a point to identify the game and half-move. "
+        "Hover over a point to identify the game and half-move; click it for a link "
+        "to the game (Lichess opens at the position before the move). "
         "The material imbalance colour scale is limited to the range "
         "−10 to +10, preventing extreme values from hiding differences "
         "between more typical positions."

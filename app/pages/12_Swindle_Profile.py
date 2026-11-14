@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 import pandas as pd
 import streamlit as st
 
+from app.filters import sidebar_filtered
 from app.ui import load_ui
 from src.metrics import m6_swindle_profile
 
@@ -92,7 +93,7 @@ def main() -> None:
         f"{lost_pct}% to at least {swing_to_pct}% after an opponent move."
     )
 
-    games, moves = load_data()
+    games, moves = sidebar_filtered(*load_data())
 
     profile = m6_swindle_profile(
         moves,
@@ -131,11 +132,13 @@ def main() -> None:
         draws = int(result["draws"])
         losses = int(result["losses"])
 
+        # Shares go in the value, not in `delta`: st.metric draws a delta as a
+        # green "improvement" arrow, which misreads a 72% loss share.
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Lost games", f"{n_games:,}")
-        col2.metric("Wins", f"{wins:,}", format_percent(wins / n_games))
-        col3.metric("Draws", f"{draws:,}", format_percent(draws / n_games))
-        col4.metric("Losses", f"{losses:,}", format_percent(losses / n_games))
+        col2.metric("Wins", f"{wins:,} ({format_percent(wins / n_games)})")
+        col3.metric("Draws", f"{draws:,} ({format_percent(draws / n_games)})")
+        col4.metric("Losses", f"{losses:,} ({format_percent(losses / n_games)})")
 
     # Control group: apply the same lost-stretch rule to both sides.
     st.markdown("### Control group — score vs expected")
@@ -341,7 +344,7 @@ def main() -> None:
         st.dataframe(
             opportunity_table,
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     # Termination breakdown only includes qualifying lost games that ended
@@ -395,7 +398,7 @@ def main() -> None:
                 ]
             ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     st.caption(

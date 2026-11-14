@@ -10,8 +10,17 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.filters import (
+    format_time_control,
+    game_urls,
+    link_column,
+    selected_points,
+    sidebar_filtered,
+)
 from app.ui import load_ui
 from src.metrics import m1_fatigue_curve
+
+DRILL_DOWN_ROW_LIMIT = 200
 
 
 @st.cache_data
@@ -35,6 +44,64 @@ st.set_page_config(
 
 load_ui()
 
+
+def render_blunder_drill_down(
+    games: pd.DataFrame,
+    moves: pd.DataFrame,
+    perf_group: str,
+    move_bucket: int,
+) -> None:
+    """List my blunders in one 5-move bucket, with a link to each move."""
+    game_info = games.set_index("game_id")
+    my_blunders = moves[
+        moves["is_my_move"]
+        & moves["move_quality"].eq("blunder")
+        & (moves["move_number"] // 5 * 5).eq(move_bucket)
+    ].copy()
+    is_bullet = my_blunders["game_id"].map(game_info["perf_type"]).eq("bullet")
+    my_blunders = my_blunders[is_bullet if perf_group == "bullet" else ~is_bullet]
+
+    st.markdown(
+        f"#### My blunders in moves {move_bucket}–{move_bucket + 4} "
+        f"({perf_group}, all game lengths)"
+    )
+    if my_blunders.empty:
+        st.info("No blunder of mine in this bucket for the current selection.")
+        return
+
+    for column in ["date_utc", "my_color", "base_seconds", "increment_seconds"]:
+        my_blunders[column] = my_blunders["game_id"].map(game_info[column])
+    my_blunders = my_blunders.sort_values("date_utc", ascending=False)
+
+    shown = my_blunders.head(DRILL_DOWN_ROW_LIMIT)
+    table = pd.DataFrame(
+        {
+            "Date": shown["date_utc"].dt.strftime("%Y-%m-%d"),
+            "Time control": [
+                format_time_control(base, inc)
+                for base, inc in zip(shown["base_seconds"], shown["increment_seconds"])
+            ],
+            "Color": shown["my_color"].str.capitalize(),
+            "Move": shown["move_number"],
+            "Played": shown["san"],
+            "Win% before": shown["win_pct"].round(0),
+            "Win% after": (shown["win_pct"] + shown["win_pct_delta"]).round(0),
+            "Game": game_urls(shown, ply_column="ply"),
+        }
+    )
+    st.dataframe(
+        table,
+        hide_index=True,
+        width="stretch",
+        column_config={"Game": link_column("Game (at the move)")},
+    )
+    st.caption(
+        f"{len(my_blunders):,} blunders in this bucket"
+        + (f", the {DRILL_DOWN_ROW_LIMIT} most recent shown." if len(my_blunders) > DRILL_DOWN_ROW_LIMIT else ".")
+        + " Lichess links open at the move; chess.com links open the game."
+    )
+
+
 def main() -> None:
     st.title("M1 — Fatigue curve")
 
@@ -47,7 +114,7 @@ def main() -> None:
         """
     )
 
-    games, moves = load_data()
+    games, moves = sidebar_filtered(*load_data())
     data = m1_fatigue_curve(moves, games).reset_index()
 
     perf_type_choice = st.selectbox(
@@ -70,7 +137,19 @@ def main() -> None:
         },
     )
     fig.update_layout(**PLOTLY_LAYOUT.to_plotly_json())
-    st.plotly_chart(fig, use_container_width=True)
+    event = st.plotly_chart(
+        fig,
+        width="stretch",
+        on_select="rerun",
+        selection_mode="points",
+        key="m1_chart",
+    )
+
+    points = selected_points(event)
+    if points:
+        render_blunder_drill_down(games, moves, perf_type_choice, int(points[0]["x"]))
+    else:
+        st.caption("Click a point to list my blunders in that part of the game, with links.")
 
     st.markdown("### How I read this")
     st.markdown(

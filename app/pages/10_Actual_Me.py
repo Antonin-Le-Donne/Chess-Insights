@@ -11,6 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.filters import render_filters_not_applied
 from app.ui import load_ui
 from src.metrics import m2_time_to_blunder, m3_greed_conversion
 from src.scope import (
@@ -71,6 +72,10 @@ load_ui()
 
 def main() -> None:
     st.title("Actual me — scoping out skill drift")
+    render_filters_not_applied(
+        "it compares my full history with the current rating regime and has its "
+        "own time-control selector."
+    )
 
     st.markdown(
         """
@@ -286,7 +291,7 @@ def main() -> None:
 
             st.plotly_chart(
                 fig,
-                use_container_width=True,
+                width="stretch",
                 config={
                     "displayModeBar": False,
                     "responsive": True,
@@ -395,7 +400,7 @@ def main() -> None:
 
     st.plotly_chart(
         fig_quality,
-        use_container_width=True,
+        width="stretch",
         config={
             "displayModeBar": False,
             "responsive": True,

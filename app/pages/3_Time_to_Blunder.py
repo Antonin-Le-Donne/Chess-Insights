@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import streamlit as st
 
+from app.filters import sidebar_filtered
 from app.ui import load_ui
 from src.metrics import m2_time_to_blunder
 
@@ -39,10 +40,18 @@ def main() -> None:
         """
     )
 
-    games, moves = load_data()
+    games, moves = sidebar_filtered(*load_data())
     stats_by_perf = m2_time_to_blunder(moves, games)
 
-    perf_type_choice = st.selectbox("Perf type", list(stats_by_perf.keys()))
+    # A time-control group emptied by the sidebar filters has no long think.
+    available = [
+        perf for perf, stats in stats_by_perf.items() if stats["n_long_think"] > 0
+    ]
+    if not available:
+        st.info("No long-think move in the current selection.")
+        return
+
+    perf_type_choice = st.selectbox("Perf type", available)
     stats = stats_by_perf[perf_type_choice]
 
     col1, col2, col3 = st.columns(3)

@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 import pandas as pd
 import streamlit as st
 
+from app.filters import render_filters_not_applied
 from app.ui import load_ui
 from src.metrics import elo_expected_score, m7_time_and_session
 
@@ -274,7 +275,7 @@ def render_metric_section(
         st.vega_lite_chart(
             score_data,
             score_spec,
-            use_container_width=True,
+            width="stretch",
         )
     with blunder_col:
         st.markdown("**Blunder rate**")
@@ -284,7 +285,7 @@ def render_metric_section(
             st.vega_lite_chart(
                 blunder_data,
                 blunder_spec,
-                use_container_width=True,
+                width="stretch",
             )
 
     display_data = chart_data[
@@ -319,7 +320,7 @@ def render_metric_section(
             "n_moves": "My rated moves",
         }
     )
-    st.dataframe(display_data, hide_index=True, use_container_width=True)
+    st.dataframe(display_data, hide_index=True, width="stretch")
 
 
 st.set_page_config(
@@ -332,6 +333,10 @@ load_ui()
 
 def main() -> None:
     st.title("M7 — Time of day and session position")
+    render_filters_not_applied(
+        "sessions are rebuilt from the complete game history, and removing games "
+        "would split sessions artificially."
+    )
 
     st.markdown(
         """
