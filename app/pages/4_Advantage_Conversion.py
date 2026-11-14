@@ -10,9 +10,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.controls import GROUP_LABELS, control_reading, format_interval, selection_key
 from app.filters import format_time_control, game_urls, link_column, sidebar_filtered
 from app.ui import load_ui
-from src.metrics import m3_greed_conversion
+from src.metrics import m3_control, m3_greed_conversion
 
 DRILL_DOWN_ROW_LIMIT = 200
 RESULT_LABELS = {1.0: "Win", 0.5: "Draw", 0.0: "Loss"}
@@ -37,6 +38,60 @@ PLOTLY_LAYOUT = go.Layout(
     template="plotly_white",
     margin=dict(l=40, r=40, t=60, b=40),
 )
+
+
+@st.cache_data(show_spinner="Bootstrapping 1,000 game resamples (about 15 s)…")
+def cached_m3_control(_moves: pd.DataFrame, _games: pd.DataFrame, key: int) -> pd.DataFrame:
+    # Underscored arguments are not hashed; `key` identifies the selection.
+    return m3_control(_moves, _games)
+
+
+def render_control(moves: pd.DataFrame, games: pd.DataFrame) -> None:
+    """My conversion vs my opponents' (mirror rule), with game-level 95% CIs."""
+    st.markdown("### Control group — my opponents from the same threshold")
+    control = cached_m3_control(moves, games, selection_key(games))
+    if control.empty:
+        st.info("No game in the current selection.")
+        return
+
+    rows = []
+    for group, group_rows in control.groupby("perf_group", sort=False):
+        mine = group_rows.loc[group_rows["side"] == "me"].iloc[0]
+        theirs = group_rows.loc[group_rows["side"] == "opponent"].iloc[0]
+        rows.append(
+            {
+                "Time control": GROUP_LABELS.get(group, group),
+                "My conversion [95% CI]": format_interval(
+                    mine["conversion"], mine["ci_lower"], mine["ci_upper"], "{:.1%}"
+                ),
+                "My games at 80%": int(mine["n_games"]),
+                "Opponents' conversion [95% CI]": format_interval(
+                    theirs["conversion"], theirs["ci_lower"], theirs["ci_upper"], "{:.1%}"
+                ),
+                "Their games at 80%": int(theirs["n_games"]),
+                "Difference me − opponents [95% CI]": format_interval(
+                    mine["conversion_difference_me_minus_opponent"] * 100,
+                    mine["difference_ci_lower"] * 100,
+                    mine["difference_ci_upper"] * 100,
+                    "{:+.1f} pp",
+                ),
+                "Reading": control_reading(
+                    mine["difference_ci_lower"],
+                    mine["difference_ci_upper"],
+                    "I convert more often",
+                    "My opponents convert more often",
+                ),
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.caption(
+        "Opponents' winning point: the first position where their win probability "
+        "reaches 80% (mine falls to 20%); a draw is a non-conversion for both sides. "
+        "Limit: my rate depends on my conversion and on their defence, theirs on their "
+        "conversion and on MY defence — my swindles (M6) lower their rate, so the "
+        "difference mixes both skills. Intervals: 1,000 game resamples, paired for the "
+        "difference."
+    )
 
 
 def render_game_list(data: pd.DataFrame) -> None:
@@ -116,6 +171,8 @@ def main() -> None:
     col1.metric("Conversion success rate", f"{data['did_convert'].mean():.1%}")
     col2.metric("Median moves to finish", int(data["plies_to_finish"].median()))
 
+    render_control(moves, games)
+
     st.markdown("### How long it takes me to finish")
     fig = px.histogram(
         data,
@@ -138,7 +195,9 @@ def main() -> None:
         - The conversion rate shows how reliable I am at closing out winning games.
         - If thrown games tend to last longer, it suggests I hesitate or miss chances instead of
           simplifying and finishing cleanly.
-        - This is a direct measure of my **technical conversion**, separate from openings or early blunders.
+        - On its own, the rate is not a measure of technical conversion: it also depends on how
+          well my opponents defend. The control group above compares it with my opponents
+          from the same threshold, and that difference still mixes my conversion with my defence.
         """
     )
 
