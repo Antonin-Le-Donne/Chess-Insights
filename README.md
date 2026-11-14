@@ -24,11 +24,11 @@ and [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) for decisions and findings.
 
 ## Planned
 
-- **v2** — calibration plot on the model page; optional per-game risk timeline.
 - **v1** — sidebar filters, hover-to-game links, month-over-month M3 tracking on the
-  Overview page.
-- **Pipeline** — incremental parsing (append new games without rewriting
-  existing Stockfish evaluations), then a refresh with the latest games.
+  Overview page, then a fresh-clone end-to-end run.
+- **v1** — opponent control groups for M2 and M3 (same design as M6), then a
+  rewording of findings #2 and #3.
+- **v2** — optional per-game risk timeline.
 
 ## Findings
 
@@ -154,8 +154,8 @@ opening numbers don't exist yet._
 
 - **Sharper, earlier blunder peak than blitz/rapid.** ~11.7% blunder rate
   around move 15 (vs ~6.8% for main at the same point) — despite bullet
-  being my strongest time control by peak rating (2,200+, against a ~2,050
-  ceiling in blitz), the raw blunder rate at the critical early-middlegame
+  being my strongest time control by peak rating on Lichess (2,170, against
+  a 1,953 peak in blitz), the raw blunder rate at the critical early-middlegame
   point runs noticeably higher here. Noisier than the main-line curve
   (smaller per-bucket samples within bullet's own duration terciles), so
   the magnitude is a rougher estimate than finding #1's.
@@ -183,17 +183,19 @@ The model predicts whether one of my moves will be labelled a blunder, using onl
 
 The dataset includes games above my rating thresholds: **Lichess blitz (1700), Lichess bullet (1950), and Chess.com bullet (1650)**. Rapid is excluded because performance has not yet reached a stable plateau in that format.
 
+The model does not use player ratings. `my_rating` and `rating_diff` were removed in November 2026: chess.com stores post-game ratings (Lichess stores pre-game ones), so on chess.com games these two features carried the result of the game being predicted. A pre-registered ablation over five training seeds measured the cost of removing them at −0.0006 PR-AUC on average, far inside the ~0.01 seed-to-seed noise.
+
 The evaluation uses my own moves after ply 10, restricted to positions where my win probability is at least 20%. Below 20%, a drop of 20 percentage points is impossible by definition, so these moves cannot be labelled as blunders under the chosen threshold. The test set consists of my **426 most recent games** (data up to 2026-10-16), held out chronologically at game level.
 
 ### Model performance
 
-The temporal test set contains **10,270 moves**, with a **6.5% blunder rate** (evaluation run `2026-10-17_19-17-41`).
+The temporal test set contains **10,270 moves**, with a **6.5% blunder rate** (evaluation run `2026-11-14_17-03-16`).
 
-- **LightGBM PR-AUC:** 0.198 (95% CI: 0.164–0.238), compared with 0.065 for a random-ranking reference.
+- **LightGBM PR-AUC:** 0.199 (95% CI: 0.167–0.238), compared with 0.065 for a random-ranking reference.
 - **Logistic-regression baseline PR-AUC:** 0.169.
-- **Paired game-level bootstrap:** LightGBM's PR-AUC improvement over logistic regression is **+0.029** (95% CI: +0.011 to +0.049); LightGBM performs better in **all 1,000** resamples.
+- **Paired game-level bootstrap:** LightGBM's PR-AUC improvement over logistic regression is **+0.030** (95% CI: +0.012 to +0.049); LightGBM performs better in **all 1,000** resamples.
 - **Calibration:** mean predicted risk is 7.4%, versus 6.5% observed.
-- **Risk ranking:** the top risk decile has a 22.7% blunder rate (about **3.5×** the test-set base rate), while the bottom decile has a 0.5% rate.
+- **Risk ranking:** the top risk decile has a 22.3% blunder rate (about **3.4×** the test-set base rate), while the bottom decile has a 0.5% rate.
 
 The model is useful for ranking positions by risk, with a measurable improvement over the logistic-regression baseline.
 
@@ -215,14 +217,14 @@ This consistency across move-number bands makes the pattern less likely to be ex
 
 The strongest model-based evidence comes from the **SHAP dependence plot for `eval_before_move`**. Its SHAP contribution forms a positive bump around the 70–80% win-probability zone, indicating that the model associates this specific zone with increased predicted blunder risk. This pattern appears while the model accounts for other features, including clock pressure, material imbalance, and evaluation volatility. Unlike a global feature-importance ranking, the dependence plot directly supports the specific risk pattern observed in the centipawn analysis.
 
-The global SHAP ranking also identifies evaluation volatility (0.49), `eval_before_move` (0.29), `clock_before_move_pct` (0.21), and material imbalance (0.18) as the four leading features.
+The global SHAP ranking also identifies evaluation volatility (0.49), `eval_before_move` (0.29), `clock_before_move_pct` (0.21), and material imbalance (0.21) as the four leading features.
 
 The finding is also relevant to conversion: the M3 game-level analysis found a **72.6% conversion rate** from positions at win% ≥ 80 (**n = 4,510** main games, blitz and rapid combined), with a median of 30 plies to finish overall and 24 plies among converted wins. This is related evidence, not the same population or exact win-probability bucket as the 70–80% move-level analysis.
 
 ### Important caveats
 
 - **Win-percentage labels flatten near the extremes.** In lost or nearly won positions, a large centipawn loss can still produce a relatively small change in win probability. The centipawn diagnostic therefore finds substantial error rates in extreme buckets even when the win%-based blunder label marks fewer moves as blunders.
-- **Training-seed variability:** the PR-AUC of the same model varies by approximately 0.01 across random seeds. This is a meaningful source of uncertainty when interpreting a performance difference of +0.029 over the baseline (all shifts after adding the latest games stayed within this noise).
+- **Training-seed variability:** the PR-AUC of the same model varies by approximately 0.01 across random seeds. This is a meaningful source of uncertainty when interpreting a performance difference of +0.030 over the baseline (every shift since October — new games, then the removal of the rating features — stayed within this noise).
 - **The test set is limited to 426 recent games.** Although it contains 10,270 moves, these moves are clustered within games and are not independent observations. Results may also reflect the characteristics of this recent period.
 - **The 50–60% bucket has a low large-error rate.** This may reflect quieter positions, including opening theory or dead-drawn endgames, rather than a general psychological effect. It is a candidate pattern, not a proven explanation.
 - **The late-game 40–50% bucket may be riskier.** In moves 31+, its large-error rate is 18.9% (n = 1,587; win%-label blunder rate 17.1%). This is an observational subgroup result and should be treated cautiously.

@@ -393,9 +393,9 @@ def assemble_features(
     game_context = games[
         [
             "game_id",
-            "my_rating",
-            "opp_rating",
-            "perf_type",
+            "my_rating",  # those column are context for the game, not features, for chess.com it's the rating after the game
+            "opp_rating", # those column are context for the game, not features, for chess.com it's the rating after the game
+            "perf_type",  
             "eco",
             "date_utc",
             "base_seconds",
@@ -407,11 +407,6 @@ def assemble_features(
         game_context,
         on="game_id",
         how="left",
-    )
-
-    dataset["rating_diff"] = (
-        dataset["my_rating"]
-        - dataset["opp_rating"]
     )
 
     dataset["opening_family"] = dataset["eco"].apply(
@@ -530,8 +525,6 @@ FEATURE_COLUMNS = [
     "n_legal_moves",
     "hanging_pieces",
     "checks_available",
-    "my_rating",
-    "rating_diff",
     "perf_type",
     "opening_family",
     "eval_before_move",
