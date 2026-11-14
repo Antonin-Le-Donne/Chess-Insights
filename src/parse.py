@@ -6,6 +6,7 @@ DataFrames: one row per game (games.parquet), one row per ply (moves.parquet).
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import re
@@ -574,20 +575,53 @@ def write_atomically(
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
 
-# TODO(incremental): optional `--full` flag (argparse) for a deliberate full
-# rebuild -- print loudly that it wipes Stockfish evals.
-# TODO(incremental): afterwards run evaluate.py (picks up the new games
-# without server evals, it already skips done ids) then features.py.
+FULL_REBUILD_CONFIRMATION = "rebuild"
+
+
+def confirm_full_rebuild(skip_prompt: bool) -> bool:
+    """Warn that --full discards every engine evaluation; ask unless --yes."""
+    print(
+        "WARNING: --full rebuilds games.parquet and moves.parquet from the raw "
+        "files only.\nEvery local Stockfish evaluation and every column added by "
+        "features.py will be LOST;\nevaluate.py will have to re-analyse every "
+        "game (hours of engine time)."
+    )
+    if skip_prompt:
+        return True
+    answer = input(f'Type "{FULL_REBUILD_CONFIRMATION}" to continue: ')
+    return answer.strip() == FULL_REBUILD_CONFIRMATION
+
+
 def main() -> None:
     """Incrementally parse raw games into games.parquet and moves.parquet.
 
     Existing processed rows are retained. Only unseen game IDs are parsed and
     appended, preserving existing Stockfish evaluations and derived columns.
+    ``--full`` deliberately rebuilds both files from the raw data instead.
     """
+    parser = argparse.ArgumentParser(description="Parse raw games into parquet files.")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="rebuild from all raw files; wipes every Stockfish evaluation",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="with --full, skip the confirmation prompt",
+    )
+    args = parser.parse_args()
+
     config = load_config()
     output_dir = Path("data/processed")
 
-    existing = load_existing(output_dir)
+    if args.full:
+        if not confirm_full_rebuild(args.yes):
+            print("Aborted: processed files left unchanged.")
+            return
+        existing = None
+    else:
+        existing = load_existing(output_dir)
 
     if existing is None:
         known_game_ids: set[str] = set()
@@ -602,8 +636,8 @@ def main() -> None:
 
     if not new_game_records:
         print(
-            "Aucune nouvelle partie à ajouter. "
-            "Les fichiers traités restent inchangés."
+            "No new games to add. "
+            "Processed files left unchanged."
         )
         return
 
@@ -663,12 +697,14 @@ def main() -> None:
     )
 
     print(
-        f"Parsing incrémental terminé : {len(new_games)} nouvelles parties "
-        f"et {len(new_moves)} nouveaux coups ajoutés."
+        f"Incremental parse done: {len(new_games)} new games "
+        f"and {len(new_moves)} new moves added."
     )
     print(
-        f"Total traité : {len(games)} parties et {len(moves)} coups."
+        f"Total processed: {len(games)} games and {len(moves)} moves."
     )
+    # evaluate.py skips games already analysed, so it only picks up new ones.
+    print("Next: python -m src.evaluate, then python -m src.features.")
 
 if __name__ == "__main__":
     main()
