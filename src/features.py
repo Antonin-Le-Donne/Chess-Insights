@@ -8,15 +8,19 @@ in config.
 Column list (spec section 4):
 win_pct, win_pct_delta, move_quality, phase, time_pressure, long_think,
 eval_state.
+
+long_think is computed independently for each player in each game.
+Each move is compared against the median time_spent of the player who
+made it, not a shared median mixing both players (M2 Option B).
 """
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import tomllib
 
 
 def add_win_pct(moves: pd.DataFrame) -> pd.Series:
@@ -80,10 +84,32 @@ def add_time_pressure(moves: pd.DataFrame, games: pd.DataFrame, thresholds: dict
     return moves["clock_after"] < thresholds["time_pressure_pct"] * base_seconds
 
 def add_long_think(moves: pd.DataFrame, thresholds: dict) -> pd.Series:
-    """Flag moves taking > factor x the game's median think time"""
-    median_per_game = moves.groupby("game_id")["time_spent"].transform("median")
+    """Flag moves taking more than factor x the player's median think time.
 
-    return moves["time_spent"] > thresholds["long_think_factor"] * median_per_game
+    The median is calculated separately for each player in each game.
+    This prevents a shared median from classifying the slower player's
+    moves as long think more often simply because their normal pace
+    differs from their opponent's.
+
+    Moves with missing time_spent or an unavailable player/game median
+    are always classified as False.
+
+    Implements Option B from the M2/M3 control comparison specification.
+    """
+    median_per_player_game = (
+        moves.groupby(["game_id", "is_my_move"])["time_spent"]
+        .transform("median")
+    )
+
+    long_think = (
+        moves["time_spent"].notna()
+        & median_per_player_game.notna()
+        & moves["time_spent"].gt(
+            thresholds["long_think_factor"] * median_per_player_game
+        ).fillna(False)
+    )
+
+    return long_think.astype(bool)
 
 def add_eval_state(moves: pd.DataFrame) -> pd.Series:
     """winning/better/equal/worse/lost from MY win_pct"""
