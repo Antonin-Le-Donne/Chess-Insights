@@ -184,9 +184,31 @@ Applied to moves.parquet:
   - inaccuracy: drop ≥ 5
   (thresholds in config.toml; these mirror Lichess conventions, tune later)
 - **phase** — opening: ply ≤ 20 or until first non-book-like criterion; middlegame; endgame: ≤ 6 non-pawn pieces total (simple material rule, keep it deterministic).
-- **time_pressure** — clock_after < 20% of base time.
+- **time_pressure** — clock_after < `time_pressure_pct` (10%) × base time. Full definition: "time_pressure — definition" below.
 - **long_think** — time_spent ≥ threshold (default 40s blitz-adjusted: use `time_spent > 8 × median_time_spent(game)` so it scales across time controls).
 - **eval_state** — from my perspective: winning (win% ≥ 80), better (65–80), equal (35–65), worse (20–35), lost (< 20).
+
+### time_pressure — definition (revised 2026-11-14)
+
+A move is considered to have low remaining time when the player's remaining clock time (`clock_after`) falls below a proportion of their initial base time (`base_seconds`).
+
+`time_pressure = clock_after < time_pressure_pct * base_seconds`
+
+The primary threshold is 10%, configured through `time_pressure_pct = 0.10` in `config.toml`.
+
+A proportional threshold is used to normalize remaining time across different time controls. However, this threshold is an operational indicator of low remaining time, not a universal definition of subjective time pressure. Whether a given amount of remaining time creates pressure depends on the position, its complexity, and the decisions required.
+
+The 10% threshold is retained as the primary definition for consistency with the reference model. A 20% threshold and absolute thresholds of 10, 20, and 30 seconds are used for sensitivity analyses.
+
+The feature is calculated independently for both players, using each player's own clock. The same threshold applies to `me` and `opponent`.
+
+Missing clock data must not be interpreted as time pressure.
+
+Games with `base_seconds <= 0` are excluded from time-pressure analyses because a proportional threshold is not meaningful for these games. They are also excluded from the V2 dataset. They remain in the stored game data.
+
+The feature definition is independent of increment status. Games with and without increments use the same rule; increment status is handled separately in the analysis.
+
+History: until 2026-11-14 the spec said 20%, the code used 10% for the feature and a hard-coded median clock < 36 s for the M4 onset (README finding 4 quoted the spec's 20%).
 
 ## 5. Core metrics (`metrics.py`) — the calculations that ARE the project
 
@@ -291,7 +313,103 @@ The control difference is:
 ### M4 — Clock burn map
 - Median + p90 time_spent by move_number; median clock_after by move_number, split by perf_type.
 - Flag pattern: "slow start → time pressure ≥ move X" vs "even burn".
-- Cross with M1: is the fatigue inflection co-located with time pressure onset, or independent? (This distinguishes "tired brain" from "rushed clock" — different fixes.)
+- Cross with M1: is the fatigue inflection co-located with time pressure onset, or independent? (This distinguishes "tired brain" from "rushed clock" — different fixes.) The onset is defined and tested in "M4 — Time-pressure onset" below, which replaces the earlier median-clock onset.
+
+#### M4 — Time-pressure onset (added 2026-11-14)
+
+For each player in each game, the onset of low remaining time is the first move where their remaining clock time (`clock_after`) falls below the configured threshold.
+
+The onset is recorded using `move_number` (full move number), not `ply`, to remain consistent with M1.
+
+The analysis is performed independently for `me` and `opponent`.
+
+##### Eligible games
+
+A game is eligible for time-pressure analysis if:
+- `base_seconds > 0`.
+- At least one valid `clock_after` observation is available for each player.
+
+The denominator for threshold-crossing proportions consists of all eligible games in the relevant group.
+
+Games with missing clock observations are not considered to have avoided time pressure. A player with no valid `clock_after` observation makes the game ineligible for the paired analysis.
+
+##### Primary estimate
+
+The primary estimate is the difference in the proportion of games crossing the time-pressure threshold:
+
+`difference = proportion_me - proportion_opponent`
+
+It is calculated separately for `main` and `bullet`, using the primary 10% threshold.
+
+A negative difference means that opponents cross the threshold in a higher proportion of games. A positive difference means that I cross the threshold in a higher proportion of games.
+
+This is the only confirmatory estimate. All other analyses are exploratory.
+
+##### Secondary and exploratory analyses
+
+The following quantities are also reported:
+- The proportion of games crossing the threshold for each side.
+- The median onset move among games where the threshold is crossed, for each side.
+- The difference between the two conditional median onset moves.
+- The cumulative incidence of threshold crossing as a function of `move_number`.
+
+The cumulative incidence function (CIF) estimates the probability that a player has crossed the threshold by a given move number, accounting for game termination before threshold crossing as a competing event.
+
+All games are observed until termination; there is no right censoring. At the end of the game, the CIF equals the crude proportion of games in which the threshold was crossed. Its additional value is showing when threshold crossings occur, allowing direct comparison with M1's blunder distribution.
+
+The CIF is evaluated at fixed move numbers, identical for `me` and `opponent`:
+- `main`: moves 20, 30, 40 and 60.
+- `bullet`: moves 10, 15, 20 and 30.
+
+These points cover the M1 peak and its later evolution.
+
+The conditional median onset is descriptive. Since the set of games crossing the threshold can differ between `me` and `opponent`, the difference between medians must not be interpreted as a comparison over identical subsets of games.
+
+##### Grouping
+
+Primary results are reported separately for `main` and `bullet`, consistent with the project's performance grouping.
+
+Cadence-level results are also reported as exploratory analyses, to avoid hiding differences between time controls within `main`.
+
+Games with and without increments are reported separately in the exploratory analyses. The primary estimate uses all eligible games within each `perf_group`.
+
+A cadence is displayed only if it contains at least 100 eligible games.
+
+##### Confidence intervals
+
+All reported inferential estimates use 95% confidence intervals.
+
+Confidence intervals are computed using 1,000 game-level bootstrap resamples, with seed 42, following the project's M2/M3 bootstrap protocol.
+
+For comparisons between `me` and `opponent`, both sides use the same sampled game IDs in each bootstrap iteration.
+
+The primary estimate, the difference in threshold-crossing proportions, receives a paired 95% bootstrap confidence interval.
+
+The following exploratory estimates also receive 95% confidence intervals:
+- The threshold-crossing proportion for each side.
+- The conditional median onset move for each side.
+- The difference between conditional median onset moves.
+- The cumulative incidence for each side at the fixed move numbers above.
+- The difference between cumulative incidences at the same move numbers.
+
+A confidence interval for a conditional median or a difference involving conditional medians is not reported if either side has fewer than 30 threshold-crossing games in the relevant group.
+
+##### Interpretation
+
+For the primary estimate:
+- If the 95% confidence interval for the difference excludes zero and is entirely negative, opponents cross the threshold in a higher proportion of games.
+- If it excludes zero and is entirely positive, I cross the threshold in a higher proportion of games.
+- If it includes zero, no statistically detectable difference is established.
+
+For the conditional median onset, the result is compared with the M1 blunder peak:
+- In `main`, the reference peak is move 20.
+- In `bullet`, the reference peak is move 15.
+
+If the lower bound of the 95% confidence interval for the median onset is later than the corresponding M1 peak, the primary low-time threshold is reached too late to plausibly explain the earlier blunder peak by itself.
+
+The proportion of blunders played under the time-pressure threshold is reported descriptively, separately for `me` and `opponent`. It is not used as a confirmatory test and does not establish causality.
+
+All comparisons are descriptive or associational; they do not establish that low remaining time causes blunders.
 
 ### M5 — Opening surgery table (hypothesis: Sicilian mismatch)
 - Group by opening family (ECO letter + first 2 chars, plus a manual mapping for Sicilian/French/Dutch/Italian/Catalan/QG), split by color.
@@ -334,7 +452,7 @@ Expect heavy class imbalance (~2–5% positives). Do not use accuracy as a metri
 
 Contextual:
 - move_number, ply, phase (one-hot)
-- clock_after previous move (absolute + % of base), increment flag, time_pressure flag
+- clock_after previous move (absolute + % of base), increment flag, time_pressure flag (see "time_pressure_before_move" below)
 - time_spent on my previous move, rolling mean of my last 3 time_spent, long_think flag on previous move
 - eval_cp before move (my perspective), win_pct, eval_state (one-hot)
 - eval volatility: std of win% over last 6 plies (sharp game proxy)
@@ -349,6 +467,20 @@ Position complexity proxies (cheap, from python-chess):
 - checks available (to me / to opponent)
 
 Explicitly EXCLUDED: anything computed from the move itself or after it (time_spent on the current move is borderline — it's known only after moving; exclude it from the main model, test it in a variant).
+
+### time_pressure_before_move (revised 2026-11-14)
+
+The `time_pressure_before_move` feature applies the same threshold as the `time_pressure` feature, using the player's remaining clock time before the current move (`clock_before_move`).
+
+For a player, this corresponds to their `clock_after` value from their previous move.
+
+For the first move of a game, no previous player clock measurement is available. The feature is set to False.
+
+The threshold is read from `config.toml` through `time_pressure_pct`. Changing this value changes the feature definition and requires retraining the model before evaluating or comparing its performance with the reference model.
+
+The reference model was trained using a 10% threshold.
+
+Excluding games with `base_seconds <= 0` from the V2 dataset also changes the training set; it takes effect at the next retraining.
 
 ## Dataset construction (`dataset.py`)
 
