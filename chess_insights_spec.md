@@ -211,6 +211,83 @@ Each function: pure, takes DataFrames, returns a DataFrame/dict. One dashboard v
 - Outputs: conversion rate; distribution of plies_to_finish (converted vs thrown games); count of games that went winning → equal-or-worse and back.
 - **The tracking stat:** median plies_to_finish per month. This is the number to drive down.
 
+### M2/M3 — Opponent control comparisons (statistical protocol, added 2026-11-14)
+
+#### Performance groups
+
+Bullet and blitz/rapid are analysed separately:
+- `bullet`
+- `main` (blitz and rapid combined)
+
+The interpretation rules below are applied independently to each group. A result in one group must not be generalized to the other.
+
+#### Bootstrap configuration
+
+All confidence intervals use a game-level percentile bootstrap:
+- 1,000 resamples;
+- 95% confidence intervals;
+- random seed: 42;
+- games are sampled with replacement;
+- repeated game IDs count repeatedly in each resample.
+
+For the difference between my result and my opponents' result, the bootstrap is paired: both sides are evaluated on the exact same sampled game IDs. This preserves the dependence between the two observations from a given game.
+
+#### Prior exposure to point estimates
+
+The point estimates have already been observed; the confidence intervals and paired-bootstrap difference intervals have not yet been inspected.
+
+This is therefore a pre-specified interpretation protocol for the still-unseen intervals, not a fully blind pre-registration. The interpretation rules are fixed before examining those intervals.
+
+#### M2 control — long think and subsequent blunders
+
+Each player's long-think classification uses their own median `time_spent` within each game:
+
+`long_think = time_spent > long_think_factor × player's own game median`
+
+This is Option B. It normalizes thinking time against each player's own pace instead of using a shared median for both players. A shared threshold could systematically classify one player as thinking unusually long simply because their normal pace differs from their opponent's.
+
+A blunder following a long think is defined as a blunder on one of that same player's next three moves in the same game.
+
+The baseline blunder rate is:
+
+`number of blunders / number of moves`
+
+Moves with a missing `move_quality` remain in the baseline denominator and are not counted as blunders. This keeps the denominator equal to the total number of moves in the sample rather than silently restricting it to moves with an available classification.
+
+For each side, the M2 ratio is:
+
+`P(blunder within next 3 moves | long think) / baseline blunder rate`
+
+The control difference is:
+
+`M2 difference = my ratio - opponent ratio`
+
+**Interpretation rule:**
+- If the 95% confidence interval of the paired difference excludes zero and the difference is positive, the long-think/blunder association is stronger in my moves. This supports a personal signature in the positive direction.
+- If the interval excludes zero and the difference is negative, the association is stronger in my opponents' moves. The difference is personal in the negative direction.
+- If the interval contains zero, there is no detectable side-specific difference. The phenomenon is compatible with being shared at my level rather than being a personal signature.
+
+An interval containing zero does not prove that the two ratios are equal. It indicates an absence of a detectable difference with this sample and method, not evidence of statistical equivalence.
+
+#### M3 control — greed conversion
+
+A game qualifies for my conversion rate when my estimated win probability first reaches or exceeds `winning_pct`.
+
+The opponent's qualifying point uses the mirrored threshold: my estimated win probability first reaches or falls below `100 - winning_pct`. This applies the same threshold symmetrically to both sides.
+
+A conversion is a win for the side that reached its qualifying point. A draw is a non-conversion for both sides.
+
+The control difference is:
+
+`M3 difference = my conversion rate - opponent conversion rate`
+
+**Interpretation rule:**
+- If the 95% confidence interval of the paired difference excludes zero and the difference is positive, my conversion rate is higher than my opponents' conversion rate.
+- If the interval excludes zero and the difference is negative, my opponents' conversion rate is higher than mine.
+- If the interval contains zero, no detectable difference in conversion rates has been established. This does not prove that the rates are equal.
+
+**Interpretation limit:** M3 measures the outcome of conversion situations, not conversion skill in isolation. My rate depends on my conversion and on my opponents' defence; their rate depends on their conversion and on my defence. The difference therefore combines how well I convert compared with my opponents and how well I defend compared with them — my swindles (M6) lower their conversion rate. M3 alone cannot separate these effects.
+
 ### M4 — Clock burn map
 - Median + p90 time_spent by move_number; median clock_after by move_number, split by perf_type.
 - Flag pattern: "slow start → time pressure ≥ move X" vs "even burn".

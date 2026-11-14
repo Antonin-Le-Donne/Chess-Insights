@@ -27,11 +27,10 @@ and [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) for decisions and findings.
 
 ## Planned
 
-- **v1** — opponent control groups for M2 and M3 (same design as M6), then a
-  rewording of findings #2 and #3.
 - **v1** — import the games played since October 2026, then a fresh-clone
   end-to-end run.
-- **v2** — optional per-game risk timeline.
+- **v2** — opponent control for the 70–80% danger zone inside the pipeline
+  (so far a one-off check); optional per-game risk timeline.
 
 ## Setup
 
@@ -107,24 +106,37 @@ per-time-control split._
    less sensitive there — part of the apparent decline is likely
    measurement scale, not purely easier calculation.
 
-2. **Time→blunder signature confirmed, stable under a much larger
-   sample.** After a "long think" (>8x the game's median thinking time),
-   the probability of blundering within my next 3 moves is 17.2%, vs a
-   4.6% baseline (my overall blunder rate across all moves, all phases) —
-   a **3.75x ratio**, on a sample of 4,414 long-think instances (760
-   followed by a blunder within 3 moves). Essentially unchanged from the
-   original 3.77x on a sample 3.5x smaller. (Rechecked in October 2026
-   after fixing an off-by-one in how Lichess server evaluations were
-   imported — it was 3.72x before; that bug only touched ~3.5% of the
-   history, so every finding on this page held.)
+2. **Long think → blunder: a real association, but not a personal
+   signature.** A "long think" is a move taking more than 8x *that
+   player's own* median time in the game. After one, the probability of
+   blundering within my next 3 moves is 17.5%, vs a 4.6% baseline — a
+   **3.83x ratio** (95% CI 3.61–4.05; 6,362 long thinks, 1,116 followed
+   by a blunder). The control group decides what that means: the same rule
+   applied to my opponents' moves gives **3.97x** (3.72–4.21, n = 4,927),
+   and the paired game-level bootstrap puts the difference at **−0.14
+   (−0.44 to +0.19)** — no detectable difference. So "recalculate, then
+   blunder" is what hard positions do to players at my level, not a habit
+   of mine. The reading rule was written in the spec before the intervals
+   were computed (the point estimates had already been seen). Definition
+   history: earlier versions of this finding (3.75x) measured long thinks
+   against the median of *both* players, which flags the slower player more
+   often — on the same games it gave my opponents 6,359 long thinks to my
+   4,590; measured against each player's own pace, the counts flip to
+   4,927 vs 6,362.
 
-3. **Conversion leak quantified — bigger than first estimated.** Of 4,510
-   games (blitz+rapid) where I reached a ≥80% win probability, only
-   **72.6%** converted to a win — more than 1 in 4 "should-win" positions
-   get thrown away. Median plies to finish: 30 overall, 24 for converted
-   wins. Revised down from an initial 74.5%/1,155-game estimate — the
-   larger, more representative sample shows a bigger leak, not a smaller
-   one.
+3. **Conversion: 1 in 4 winning positions not won — yet better than my
+   opponents from the same point.** Of 4,658 blitz/rapid games where I
+   reached a ≥80% win probability, I won **72.6%** (95% CI 71.4–73.8);
+   median plies to finish 30 overall, 24 for converted wins. Read alone,
+   that looks like a leak, and earlier versions of this README called it
+   one. The control says otherwise: from the mirrored threshold in the same
+   games, my opponents convert only **64.8%** (63.5–66.0, n = 4,829), a
+   difference of **+7.9 points (+5.7 to +10.0)** by paired bootstrap. Not a
+   relative weakness. The limit: my rate depends on my conversion and on my
+   opponents' defence, theirs on their conversion and on *my* defence — and
+   finding #6 shows my defence is strong — so the gap mixes both skills and
+   does not prove a better conversion technique. In absolute terms, the 27%
+   of unconverted games remain the largest pool of points I can still win.
 
 4. **Time pressure and the mid-game blunder peak look like separate
    failure modes — the gap is wider than first thought.** Genuine time
@@ -210,15 +222,19 @@ opening numbers don't exist yet._
   point runs noticeably higher here. Noisier than the main-line curve
   (smaller per-bucket samples within bullet's own duration terciles), so
   the magnitude is a rougher estimate than finding #1's.
-- **Time→blunder ratio holds up even under bullet's compressed clock.**
-  3.84x (vs 3.75x for main) — the "recalculate, then blunder" signature
-  isn't specific to having minutes to spare; it shows up even when the
-  whole game lasts under a minute.
-- **Conversion is worse in bullet, not better — a real tension with the
-  strength gap.** 67.3% (n=2,512) vs 72.6% for main — despite the higher
-  peak rating in bullet, winning positions get thrown away more often
-  here, not less, a 5.3-point gap. Median plies to finish: 32 (28 for
-  converted wins), both a touch longer than main's 30/24.
+- **The long-think association holds under bullet's compressed clock —
+  and is not mine there either.** 3.48x (95% CI 2.81–4.21, n = 804 long
+  thinks, own-pace definition; 3.84x under the old shared-median one) vs
+  2.99x for my opponents (2.54–3.47); difference +0.50 (−0.30 to +1.33),
+  no detectable difference, same reading as finding #2.
+- **Conversion is worse in bullet than in blitz/rapid, but still better
+  than my bullet opponents.** 67.3% (n = 2,518) vs 72.6% for main —
+  despite the higher peak rating in bullet, winning positions are thrown
+  away more often here. From the same mirrored threshold, my bullet
+  opponents convert 58.0% (56.2–59.8): **+9.3 points (+6.4 to +12.3)** in
+  my favour, with the same conversion/defence limit as finding #3. Median
+  plies to finish: 32 (28 for converted wins), both a touch longer than
+  main's 30/24.
 - **Time pressure sets in far earlier, as expected from the clock alone.**
   Move 54, vs move 67 for main — a shorter base time (60s typical) makes
   this mechanical rather than surprising, included mainly as a sanity
@@ -270,7 +286,7 @@ The strongest model-based evidence comes from the **SHAP dependence plot for `ev
 
 The global SHAP ranking also identifies evaluation volatility (0.49), `eval_before_move` (0.29), `clock_before_move_pct` (0.21), and material imbalance (0.21) as the four leading features.
 
-The finding is also relevant to conversion: the M3 game-level analysis found a **72.6% conversion rate** from positions at win% ≥ 80 (**n = 4,510** main games, blitz and rapid combined), with a median of 30 plies to finish overall and 24 plies among converted wins. This is related evidence, not the same population or exact win-probability bucket as the 70–80% move-level analysis.
+The finding is also relevant to conversion: the M3 game-level analysis found a **72.6% conversion rate** from positions at win% ≥ 80 (**n = 4,658** main games, blitz and rapid combined) — 7.9 points better than my opponents from the same threshold (finding #3). This is related evidence, not the same population or exact win-probability bucket as the 70–80% move-level analysis.
 
 ### Important caveats
 
@@ -280,6 +296,7 @@ The finding is also relevant to conversion: the M3 game-level analysis found a *
 - **The 50–60% bucket has a low large-error rate.** This may reflect quieter positions, including opening theory or dead-drawn endgames, rather than a general psychological effect. It is a candidate pattern, not a proven explanation.
 - **The late-game 40–50% bucket may be riskier.** In moves 31+, its large-error rate is 18.9% (n = 1,587; win%-label blunder rate 17.1%). This is an observational subgroup result and should be treated cautiously.
 - **Uncertainty matters.** For a rate near 19% with a sample of about 900 moves, a simple binomial 95% interval is roughly ±2.6 percentage points. This ignores within-game correlation, so it may understate uncertainty.
+- **Not yet controlled against my opponents.** This zone is measured on my moves only. A one-off check outside the pipeline found my opponents' large-error rate in their own 70–80% zone to be about the same as mine (17.5% vs 17.4%, all history, blitz/rapid). If the pipeline confirms it, the zone describes where blunders concentrate at my level rather than a personal weakness — the same reading findings #2 and #3 received once controlled.
 - **The evidence is observational.** These analyses identify associations and predictive patterns; they do not establish why these errors occur.
 
 ### Current conclusion
