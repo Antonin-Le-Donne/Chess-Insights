@@ -10,10 +10,13 @@ greed in winning positions, and opening mismatches.
 ## Status
 
 - **v1 — pipeline + analytics dashboard: working, not complete.** Lichess +
-  chess.com, blitz/rapid/bullet, ~11,251 games (~9,200 blitz+rapid, ~2,500+
-  bullet after M3 filtering), evaluated with local Stockfish or Lichess
-  server evals. Metrics M1–M7 and their Streamlit pages are live; findings
-  below were re-checked in October 2026 after an eval-import bug fix.
+  chess.com, blitz/rapid/bullet, 11,482 games (7,338 blitz+rapid, 4,144
+  bullet), evaluated with local Stockfish or Lichess server evals, fetched
+  incrementally. Metrics M1–M7 and their Streamlit pages are live, with
+  sidebar filters (platform, time control, dates, color, opening family),
+  click-through links from charts and tables to the games, and a
+  month-over-month M3 tracker on the Overview page; findings below were
+  re-checked in October 2026 after an eval-import bug fix.
 - **v2 — personal blunder-risk model: trained and evaluated.** LightGBM on
   the current rating regime, reproducible train/evaluate scripts, PR-AUC
   with bootstrap CIs, SHAP analysis, and a dashboard page — see
@@ -24,11 +27,59 @@ and [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) for decisions and findings.
 
 ## Planned
 
-- **v1** — sidebar filters, hover-to-game links, month-over-month M3 tracking on the
-  Overview page, then a fresh-clone end-to-end run.
 - **v1** — opponent control groups for M2 and M3 (same design as M6), then a
   rewording of findings #2 and #3.
+- **v1** — import the games played since October 2026, then a fresh-clone
+  end-to-end run.
 - **v2** — optional per-game risk timeline.
+
+## Setup
+
+Requires **Python 3.11+** (`tomllib`). Every command runs from the repository root:
+the scripts and the dashboard use paths relative to it.
+
+1. **Install the dependencies** (versions are pinned):
+
+   ```
+   python -m venv .venv
+   .venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. **Install Stockfish.** The engine is not in the repository (`stockfish/` is
+   git-ignored). Download it from [stockfishchess.org](https://stockfishchess.org/download/)
+   and place the binary at `stockfish/stockfish.exe`. On macOS/Linux, point
+   `STOCKFISH_PATH` in `src/evaluate.py` to your binary instead.
+
+3. **Set the usernames** in `config.toml`: `username` (Lichess) and
+   `chesscom_username`.
+
+4. **Optional: a Lichess API token.** Without one the download still works, only
+   slower (20 games/s instead of 60). Create a free personal token on Lichess
+   and put it in a `.env` file at the root, which is git-ignored:
+
+   ```
+   LICHESS_TOKEN=your_token_here
+   ```
+
+## Run
+
+```
+python -m src.fetch            # Lichess; incremental after the first run (--full for everything)
+python -m src.fetch_chesscom   # chess.com monthly archives, cached in data/raw/chesscom/
+python -m src.parse            # appends new games only; never rewrites existing rows
+python -m src.evaluate         # local Stockfish on games without Lichess server evals
+python -m src.features         # win%, move quality, phases; stops on a broken label
+streamlit run app/dashboard.py
+```
+
+- `evaluate` is the slow step: depth 20 with 5 parallel workers took about
+  2 hours per 1,000 games on my machine. It is resumable — stopping it with
+  Ctrl+C keeps the games already analysed, and the next run skips them.
+- Afterwards, the same chain imports new games: each step only processes what
+  is new.
+- **V2 model:** `python -m src.model.train`, then `python -m src.model.evaluate_model`
+  (results in `model_evaluation/<timestamp>/`, read by the dashboard's model page).
 
 ## Findings
 

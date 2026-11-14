@@ -113,9 +113,10 @@ In builder mode you may write and edit code directly. Rules:
 
 ## Where things go
 
-- One-off queries and exploratory scripts go in `scripts/`, never at the repo root.
-  Name them by purpose (for example `scripts/check_opening_frequencies.py`).
-- Move any existing throwaway script at the root into `scripts/` when you touch it.
+- One-off queries and exploratory scripts go in `one_use_scripts/`, never at the repo
+  root. Name them by purpose (for example `one_use_scripts/check_opening_frequencies.py`).
+- Move any existing throwaway script at the root into `one_use_scripts/` when you
+  touch it.
 
 ## Interaction style
 

@@ -71,9 +71,13 @@ Key query parameters:
 - Accept header `application/x-chess-pgn` (PGN stream) is simplest with python-chess.
 
 Notes:
-- Streamed response; write to `data/raw/lichess/games_{date}.pgn`. Do not parse during download.
+- Streamed response; write to `data/raw/lichess/games_{date}_{time}.pgn` (the time
+  keeps two runs on the same day from overwriting each other). Do not parse during download.
 - With an API token: 60 games/s download rate; without: 20 games/s. Token is a free personal token, no OAuth app needed.
-- Idempotent incremental fetch: store last fetch timestamp, use `since` on next run.
+- Idempotent incremental fetch: use `since` on next run, set just after the start of
+  the newest Lichess game already in `games.parquet` (derived from the data rather than
+  a stored "last fetch" timestamp, so a game still in progress during the previous
+  fetch is not skipped). `--full` re-downloads the whole history.
 
 ### Source B — chess.com (add AFTER the Lichess pipeline works end-to-end)
 
@@ -87,7 +91,9 @@ Notes:
   so 100% of these games go through the local Stockfish pass.
 - Etiquette: identifiable User-Agent header, sequential requests (no parallel
   hammering), cache each month to `data/raw/chesscom/{YYYY}_{MM}.json` and never
-  re-fetch a completed past month (immutable).
+  re-fetch a completed past month (immutable). A month counts as completed only if
+  its cache file was written after the month ended; a file cached during its month
+  is partial and is fetched again.
 - Filter to rated blitz/rapid/classical at parse time (`time_class` field);
   bullet excluded, same rule as Lichess.
 
@@ -296,5 +302,5 @@ Explicitly EXCLUDED: anything computed from the move itself or after it (time_sp
 
 # Definition of done
 
-- v1: `python -m src.fetch && python -m src.parse && python -m src.evaluate && streamlit run app/dashboard.py` works end-to-end on a fresh clone; README contains 5 written findings with numbers.
+- v1: `python -m src.fetch && python -m src.fetch_chesscom && python -m src.parse && python -m src.evaluate && python -m src.features && streamlit run app/dashboard.py` works end-to-end on a fresh clone; README contains 5 written findings with numbers.
 - v2: reproducible train script, test-set PR-AUC reported, SHAP summary chart, one paragraph in README: "what actually predicts my blunders".
