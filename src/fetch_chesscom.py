@@ -32,18 +32,31 @@ def month_cache_path(archive_url: str) -> Path:
     return Path("data/raw/chesscom") / f"{year}_{month}.json"
 
 
-def is_current_month(archive_url: str) -> bool:
-    """True if this archive's YYYY/MM matches today's UTC year/month --
-    the one exception to "never re-fetch a cached month".
-    """
+def month_end(archive_url: str) -> datetime:
+    """First instant (UTC) after the archive's month: games can no longer be added."""
 
     parts = archive_url.rstrip("/").split("/")
     year = int(parts[-2])
     month = int(parts[-1])
 
-    now = datetime.now(tz=timezone.utc)
+    if month == 12:
+        return datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    return datetime(year, month + 1, 1, tzinfo=timezone.utc)
 
-    return year == now.year and month == now.month
+
+def cache_is_complete(cache_path: Path, archive_url: str) -> bool:
+    """True if the cached file was written after its month ended.
+
+    A month is immutable only once it is over (spec: "never re-fetch a
+    completed past month"). A file cached DURING its month is partial: the
+    games played after that fetch are missing, so it must be fetched again.
+    Checking "is it the current month?" is not enough -- a month cached on
+    the 17th and checked the following month would be skipped forever.
+    """
+    if not cache_path.exists():
+        return False
+    written_at = datetime.fromtimestamp(cache_path.stat().st_mtime, tz=timezone.utc)
+    return written_at >= month_end(archive_url)
 
 
 def fetch_month(archive_url: str, headers: dict) -> dict:
@@ -66,7 +79,7 @@ def main() -> None:
     for archive_url in archive_urls:
         cache_path = month_cache_path(archive_url)
 
-        if cache_path.exists() and not is_current_month(archive_url):
+        if cache_is_complete(cache_path, archive_url):
             print(f"Skipping {cache_path.name} -- already cached")
             continue
 
