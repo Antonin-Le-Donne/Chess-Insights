@@ -136,6 +136,9 @@ games** (10,270 moves), which it never saw during training.
   at my level slips, not a weakness of mine.
 - **Player ratings are not used.** chess.com records ratings after the game, so
   they would leak the result. Removing them cost nothing measurable.
+- **Risk timeline.** A dashboard page replays any test game move by move: the
+  predicted risk of each of my moves, my actual blunders, my win%, and, on
+  hover, the three factors that weighed most in each prediction.
 
 ## Honest limits
 
@@ -149,16 +152,17 @@ games** (10,270 moves), which it never saw during training.
 ## Status
 
 **Working, not complete.** The pipeline, the dashboard (seven metrics, filters,
-links to games) and the V2 model work. Games are imported up to 2026-11-14
+links to games, per-game risk timeline) and the V2 model work. Games are imported up to 2026-11-14
 (12,042 games); the numbers above still come from the 2026-10-16 snapshot.
 
 Next steps:
 
+- a new definition of the time-pressure onset (M4), tested against my
+  opponents;
 - an opponent control for the 70–80% zone, inside the pipeline;
 - one final refresh of every number on the full data, including retraining the
   model;
-- an end-to-end run from a fresh clone (Definition of Done v1);
-- optional: a per-game risk timeline.
+- an end-to-end run from a fresh clone (Definition of Done v1).
 
 Full specification: [chess_insights_spec.md](chess_insights_spec.md). Decisions,
 bugs and their fixes: [PROJECT_TRACKER.md](PROJECT_TRACKER.md).
@@ -209,4 +213,7 @@ streamlit run app/dashboard.py
 - Afterwards, the same chain imports new games: each step only processes what
   is new.
 - **V2 model:** `python -m src.model.train`, then `python -m src.model.evaluate_model`
-  (results in `model_evaluation/<timestamp>/`, read by the dashboard's model page).
+  (results in `model_evaluation/<timestamp>/`, read by the dashboard's model and
+  risk-timeline pages). Always train before evaluating: the evaluation rebuilds
+  the test set from the current data, so after an import it no longer matches
+  the saved model's split.

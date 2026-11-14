@@ -500,6 +500,16 @@ Excluding games with `base_seconds <= 0` from the V2 dataset also changes the tr
 - **Feature importance + SHAP values: this is the actual payoff.** The ranking of what drives my blunder risk (time pressure? move depth? sharp Sicilians?) is the insight the whole project exists for, and the chart to show in an interview.
 - Slice analysis: AUC per phase, per perf_type, per eval_state.
 
+### Per-game risk timeline (dashboard, added 2026-11-14)
+
+- **Games shown:** only games in the model's **test set** (held out chronologically). Training games would show in-sample predictions, which look better than the model really is.
+- **Data:** `evaluate_model.py` also saves `test_predictions.parquet` in the run folder: one row per test move (game_id, ply, move_number, predicted risk, actual label, win% before the move, clock before the move, top 3 SHAP contributions). The page reads the latest run, so a retrain updates it automatically.
+- **Chart, one game at a time:** predicted risk per move (line) with the test-set base rate as a reference line; actual blunders marked; my win% in a second panel on the same move axis. Moves outside the model population (ply ≤ 10, win% < 20) appear as gaps, not as zero risk.
+- **Hover:** move (SAN), predicted risk, the top 3 SHAP factors. **Click:** opens the game at that ply.
+- **Game picker:** filter by perf_type and result; sort by date or by highest predicted risk.
+- **Reading:** descriptive. A high-risk move followed by no blunder is not a model error: the risk is a probability, not a prediction of the outcome. No control group: it is a view of the model, not a metric.
+- **Placement:** a dedicated dashboard page.
+
 ## V2 milestones
 
 1. dataset.py + baseline logistic regression + honest metrics.

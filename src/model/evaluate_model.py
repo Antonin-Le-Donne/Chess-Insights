@@ -28,6 +28,26 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 from src.model.dataset import load_model_splits
 
+# One-hot prefix -> original categorical feature (prepare_xy's encoding).
+CATEGORICAL_PREFIXES: dict[str, str] = {
+    "phase_": "phase",
+    "perf_type_": "perf_type",
+    "opening_family_": "opening_family",
+    "eval_state_before_move_": "eval_state_before_move",
+}
+
+# Per-move context saved next to the predictions for the risk timeline page.
+TEST_PREDICTION_CONTEXT = [
+    "game_id",
+    "ply",
+    "move_number",
+    "san",
+    "eval_before_move",
+    "clock_before_move",
+]
+
+TOP_SHAP_FACTORS = 3
+
 
 def load_models(model_dir: str = "models") -> dict:
     """Load baseline_logistic.joblib, lightgbm.joblib, feature_columns.joblib."""
@@ -423,20 +443,13 @@ def shap_summary(
         name="mean_abs_shap",
     )
 
-    categorical_prefixes: dict[str, str] = {
-        "phase_": "phase",
-        "perf_type_": "perf_type",
-        "opening_family_": "opening_family",
-        "eval_state_before_move_": "eval_state_before_move",
-    }
-
     grouped_importance: dict[str, float] = {}
 
     for column, value in importance.items():
         column_name = str(column)
         feature_name = column_name
 
-        for prefix, original_feature in categorical_prefixes.items():
+        for prefix, original_feature in CATEGORICAL_PREFIXES.items():
             if column_name.startswith(prefix):
                 feature_name = original_feature
                 break
@@ -461,6 +474,79 @@ def shap_summary(
     )
 
     return summary
+
+
+def _feature_group(column: str) -> str:
+    """Original feature name of a model column (one-hot columns grouped)."""
+    for prefix, original_feature in CATEGORICAL_PREFIXES.items():
+        if column.startswith(prefix):
+            return original_feature
+    return column
+
+
+def _display_value(value: object) -> str:
+    """Short text for a feature value in a hover label."""
+    if value is None:
+        return "n/a"
+    if isinstance(value, (bool, np.bool_)):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        if pd.isna(value):
+            return "n/a"
+        return f"{float(value):.3g}"
+    return str(value)
+
+
+def save_test_predictions(
+    model,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    test_raw: pd.DataFrame,
+    output_path: Path,
+    top_n: int = TOP_SHAP_FACTORS,
+) -> pd.DataFrame:
+    """One row per test move for the per-game risk timeline (spec V2,
+    "Per-game risk timeline"): predicted risk, actual label, move context and
+    the top_n SHAP contributions of that move.
+
+    SHAP values are computed on the whole test set (not the 3,000-move
+    sample used for the global summary). One-hot columns are summed back
+    into their original feature, whose value is the move's category. SHAP
+    contributions are in log-odds, positive = pushes the risk up.
+    """
+    proba = model.predict_proba(X_test)[:, 1]
+    shap_values = compute_shap_values(model, X_test)
+
+    groups = [_feature_group(str(column)) for column in X_test.columns]
+    grouped_shap = (
+        pd.DataFrame(shap_values, index=X_test.index, columns=X_test.columns)
+        .T.groupby(groups, sort=False)
+        .sum()
+        .T
+    )
+
+    predictions = test_raw.loc[X_test.index, TEST_PREDICTION_CONTEXT].copy()
+    predictions["predicted_risk"] = proba
+    predictions["is_blunder"] = y_test.to_numpy().astype(bool)
+
+    feature_values = test_raw.loc[X_test.index, list(grouped_shap.columns)]
+    order = np.argsort(-np.abs(grouped_shap.to_numpy()), axis=1)[:, :top_n]
+    names = grouped_shap.columns.to_numpy()
+
+    for rank in range(top_n):
+        columns = names[order[:, rank]]
+        predictions[f"factor_{rank + 1}"] = columns
+        predictions[f"factor_{rank + 1}_shap"] = np.take_along_axis(
+            grouped_shap.to_numpy(), order[:, [rank]], axis=1
+        ).ravel()
+        predictions[f"factor_{rank + 1}_value"] = [
+            _display_value(feature_values.at[index, column])
+            for index, column in zip(X_test.index, columns)
+        ]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    predictions.to_parquet(output_path, index=False)
+    return predictions
 
 
 def slice_analysis(
@@ -744,6 +830,14 @@ if __name__ == "__main__":
         shap_sample,
         test_raw,
         output_dir / "shap_values.parquet",
+    )
+
+    save_test_predictions(
+        lightgbm_model,
+        X_test,
+        y_test,
+        test_raw,
+        output_dir / "test_predictions.parquet",
     )
 
     metrics_summary.to_csv(
