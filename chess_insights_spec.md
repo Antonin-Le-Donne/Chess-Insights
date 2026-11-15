@@ -448,6 +448,8 @@ Streamlit, one page per metric M1–M7 plus an Overview page with: games count, 
 
 **Dashboard principles (added 2026-11-15).** Each page answers one question. The answer comes first, as one sentence computed from the data (with the me-vs-opponents verdict where a control exists). One main chart per page; secondary charts, tables and method notes go into expanders. Plain-language labels; technical terms (SHAP, CIF, bootstrap) only inside a "How this is computed" expander. Applied page by page, starting with the V2 risk page as the template.
 
+**Overview (revised 2026-11-15).** Question: "What do my games say about me, and am I improving?" (1) Headline sentence: games, date range, this month's games and conversion vs all history. (2) Findings summary: one card per metric (M1–M7, V2) with its one-line result and a verdict badge — personal strength / shared at my level / not yet compared — linking to its page; numbers read from `data/reports/summary.json`, written by `python -m src.metrics` (run date shown; sidebar filters do not apply to the cards). (3) Progress: monthly conversion from ≥ 80% as a line with its 95% Wilson band (table in an expander). (4) "About the data" expander: eval coverage, platforms, date range.
+
 ## V1 milestones
 
 1. **Week 1:** fetch + parse → moves.parquet with clocks. Sanity-check time_spent on 5 games manually.

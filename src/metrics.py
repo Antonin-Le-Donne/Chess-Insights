@@ -10,6 +10,7 @@ M1-M7 metrics.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
@@ -2159,6 +2160,123 @@ def load_m7_settings(config_path: Path | None = None) -> tuple[str, float, int]:
 
 
 
+SUMMARY_PATH = Path("data/reports/summary.json")
+
+
+def _row(frame: pd.DataFrame, **match: object) -> pd.Series:
+    """The single row of `frame` whose columns equal `match`."""
+    mask = pd.Series(True, index=frame.index)
+    for column, value in match.items():
+        mask &= frame[column].eq(value)
+    return frame.loc[mask].iloc[0]
+
+
+def build_overview_summary(
+    moves: pd.DataFrame,
+    games: pd.DataFrame,
+    m2_control_results: pd.DataFrame,
+    m3_control_results: pd.DataFrame,
+    m4_control_results: pd.DataFrame,
+    m4_peaks: dict[str, float],
+    m5_results: pd.DataFrame,
+    m6_results: dict[str, pd.DataFrame],
+    m7_results: dict[str, pd.DataFrame],
+) -> dict:
+    """One-line numbers per metric for the Overview cards (spec section 6,
+    "Overview", revised 2026-11-15). Blitz/rapid ("main") only; every number
+    is read from results computed above, nothing is recomputed differently.
+    """
+    summary: dict = {
+        "generated_at": pd.Timestamp.now().isoformat(timespec="seconds"),
+        "scope": "main (blitz + rapid), all games",
+        "data": {
+            "n_games": len(games),
+            "date_from": str(games["date_utc"].min().date()),
+            "date_to": str(games["date_utc"].max().date()),
+        },
+    }
+
+    peak_end = m4_peaks.get("main", np.nan)
+    if pd.notna(peak_end):
+        games_40plus = games[games["n_plies"] >= M4_PEAK_MIN_PLIES]
+        curve = m1_peak_by_move(
+            moves[moves["game_id"].isin(games_40plus["game_id"])], games_40plus
+        )
+        summary["m1"] = {
+            "peak_start": int(peak_end - 4),
+            "peak_end": int(peak_end),
+            "peak_rate": float(curve.loc[("main", int(peak_end - 4)), "blunder_rate"]),
+        }
+
+    me, opp = _row(m2_control_results, perf_group="main", side="me"), _row(
+        m2_control_results, perf_group="main", side="opponent"
+    )
+    summary["m2"] = {
+        "ratio_me": float(me["ratio"]),
+        "ratio_opponent": float(opp["ratio"]),
+        "diff": float(me["ratio_difference_me_minus_opponent"]),
+        "diff_lo": float(me["difference_ci_lower"]),
+        "diff_hi": float(me["difference_ci_upper"]),
+    }
+
+    me, opp = _row(m3_control_results, perf_group="main", side="me"), _row(
+        m3_control_results, perf_group="main", side="opponent"
+    )
+    summary["m3"] = {
+        "conv_me": float(me["conversion"]),
+        "conv_opponent": float(opp["conversion"]),
+        "diff": float(me["conversion_difference_me_minus_opponent"]),
+        "diff_lo": float(me["difference_ci_lower"]),
+        "diff_hi": float(me["difference_ci_upper"]),
+    }
+
+    me, opp = _row(m4_control_results, perf_group="main", side="me"), _row(
+        m4_control_results, perf_group="main", side="opponent"
+    )
+    summary["m4"] = {
+        "prop_me": float(me["proportion"]),
+        "prop_opponent": float(opp["proportion"]),
+        "diff": float(me["proportion_difference_me_minus_opponent"]),
+        "diff_lo": float(me["difference_ci_lower"]),
+        "diff_hi": float(me["difference_ci_upper"]),
+        "median_onset_me": float(me["median_onset_move"]),
+        "peak_end": float(peak_end),
+    }
+
+    # Display choice: the lowest-scoring family/color with at least 100 games.
+    candidates = m5_results[m5_results["n_games"] >= 100]
+    if not candidates.empty:
+        weakest = candidates.loc[candidates["score_pct"].idxmin()]
+        summary["m5"] = {
+            "family": str(weakest["opening_family"]),
+            "color": str(weakest["my_color"]),
+            "score": float(weakest["score_pct"]),
+            "n_games": int(weakest["n_games"]),
+        }
+
+    me = _row(m6_results["results"], perf_group="main")
+    opp = _row(m6_results["control"], perf_group="main")
+    summary["m6"] = {
+        "me_vs_expected": float(me["score_vs_expected"]),
+        "opponent_vs_expected": float(opp["score_vs_expected"]),
+        "n_me": int(me["n"]),
+        "n_opponent": int(opp["n"]),
+    }
+
+    after = m7_results["after_previous"].set_index("after_previous")
+    summary["m7"] = {
+        "after_win": float(after.loc["after win", "score_vs_expected"]),
+        "after_loss": float(after.loc["after loss", "score_vs_expected"]),
+    }
+    return summary
+
+
+def write_overview_summary(summary: dict, path: Path = SUMMARY_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+
 if __name__ == "__main__":
     moves = pd.read_parquet("data/processed/moves.parquet")
     games = pd.read_parquet("data/processed/games.parquet")
@@ -2213,15 +2331,16 @@ if __name__ == "__main__":
     )
 
     print("\n--- M3 control ---")
-    print(m3_control(
+    m3_control_results = m3_control(
         moves,
         games,
         winning_pct=80,
         n_bootstrap=1000,
         ci=0.95,
         random_state=42,
-    ))   
-    
+    )
+    print(m3_control_results)
+
     print("\n--- M4 clock burn map ---")
     m4 = m4_clock_burn_map(moves, games)
     print(m4)
@@ -2238,7 +2357,8 @@ if __name__ == "__main__":
     )
     print("Eligible paired games:", primary_onset["game_id"].nunique())
     print("\nM4 — Confirmatory comparison by perf_group")
-    print(m4_onset_control(primary_onset).to_string(index=False))
+    m4_control_results = m4_onset_control(primary_onset)
+    print(m4_control_results.to_string(index=False))
     print("\nM4 — Exploratory comparison by cadence (minimum 100 games)")
     print(
         m4_onset_control(
@@ -2256,7 +2376,8 @@ if __name__ == "__main__":
     print("\nM4 — Exploratory cumulative incidence")
     print(m4_onset_cif(primary_onset).to_string(index=False))
     print("\nM4 — Dynamic M1 reference peak (end of peak bucket)")
-    print(pd.Series(m4_reference_peak(moves, games), name="reference_peak_move"))
+    m4_peaks = m4_reference_peak(moves, games)
+    print(pd.Series(m4_peaks, name="reference_peak_move"))
     print("\nM4 — Descriptive share of blunders under time pressure")
     print(m4_blunders_under_time_pressure(moves, games).to_string(index=False))
 
@@ -2285,7 +2406,8 @@ if __name__ == "__main__":
         print(m4_onset_cif(sensitivity_onset).to_string(index=False))
 
     print("\n--- M5 opening surgery ---")
-    print(m5_opening_surgery(moves, games))
+    m5_results = m5_opening_surgery(moves, games)
+    print(m5_results)
 
     print("\n--- M1 retest: games of at least 40 plies ---")
     games_40plus = games[games["n_plies"] >= 40]
@@ -2341,3 +2463,18 @@ if __name__ == "__main__":
     print(m7["by_game_index"].to_string(index=False))
     print("\nM7 — By result of the previous game")
     print(m7["after_previous"].to_string(index=False))
+
+    write_overview_summary(
+        build_overview_summary(
+            moves,
+            games,
+            m2_control_results,
+            m3_control_results,
+            m4_control_results,
+            m4_peaks,
+            m5_results,
+            m6,
+            m7,
+        )
+    )
+    print(f"\nOverview summary written to {SUMMARY_PATH}")

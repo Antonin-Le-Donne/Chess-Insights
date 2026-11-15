@@ -25,17 +25,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from app.filters import game_url, render_filters_not_applied
+from app.risk_bands import add_risk_band, band_rates, find_latest_predictions
 from app.ui import load_ui
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-EVALUATION_DIR = PROJECT_ROOT / "model_evaluation"
-PREDICTIONS_FILE = "test_predictions.parquet"
 TOP_FACTORS = 3
 LIST_SIZE = 100
-
-LOW_BAND_QUANTILE = 0.50   # bottom 50% of predicted risk
-HIGH_BAND_QUANTILE = 0.90  # top 10% of predicted risk
-BAND_ORDER = ["Low risk", "Medium risk", "High risk"]
 
 ACCENT = "#C7F36B"
 INFO = "#7CC4FF"
@@ -62,15 +56,6 @@ PLOT_LAYOUT = dict(
 
 # ---------- data ----------
 
-def find_latest_predictions() -> Path | None:
-    """Most recent model_evaluation/<timestamp>/test_predictions.parquet."""
-    files = sorted(
-        EVALUATION_DIR.glob(f"*/{PREDICTIONS_FILE}"),
-        key=lambda path: path.parent.name,
-    )
-    return files[-1] if files else None
-
-
 @st.cache_data
 def load_predictions(path: str) -> pd.DataFrame:
     """Test predictions joined with game context, with a risk band per move."""
@@ -80,12 +65,7 @@ def load_predictions(path: str) -> pd.DataFrame:
         columns=["game_id", "date_utc", "platform", "perf_type", "my_color", "base_seconds"],
     )
     predictions = predictions.merge(games, on="game_id", how="left")
-
-    low_cut = predictions["predicted_risk"].quantile(LOW_BAND_QUANTILE)
-    high_cut = predictions["predicted_risk"].quantile(HIGH_BAND_QUANTILE)
-    predictions["band"] = "Medium risk"
-    predictions.loc[predictions["predicted_risk"] < low_cut, "band"] = "Low risk"
-    predictions.loc[predictions["predicted_risk"] >= high_cut, "band"] = "High risk"
+    predictions["band"] = add_risk_band(predictions)
     return predictions
 
 
@@ -218,11 +198,7 @@ def move_label(move_number: int, san: str, is_white: bool) -> str:
 
 def render_headline(predictions: pd.DataFrame) -> None:
     """The answer first: blunder rate per risk band."""
-    by_band = (
-        predictions.groupby("band")["is_blunder"]
-        .agg(rate="mean", n="size", blunders="sum")
-        .reindex(BAND_ORDER)
-    )
+    by_band = band_rates(predictions)
     low, high = by_band.loc["Low risk", "rate"], by_band.loc["High risk", "rate"]
     share_caught = by_band.loc["High risk", "blunders"] / by_band["blunders"].sum()
     base_rate = predictions["is_blunder"].mean()

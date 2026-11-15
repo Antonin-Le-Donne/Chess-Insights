@@ -221,7 +221,9 @@ streamlit run app/dashboard.py
 - Afterwards, the same chain imports new games: each step only processes what
   is new.
 - **Metrics report:** `python -m src.metrics` prints every metric (M1–M7, with
-  the opponent controls and their bootstrap intervals; a few minutes). To keep
+  the opponent controls and their bootstrap intervals; a few minutes) and
+  writes `data/reports/summary.json`, which the dashboard's Overview cards
+  read — re-run it after each import to refresh them. To keep
   a copy in `data/reports/` (git-ignored), from the repository root:
 
   ```
