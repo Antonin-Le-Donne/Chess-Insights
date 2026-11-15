@@ -214,6 +214,22 @@ streamlit run app/dashboard.py
   Ctrl+C keeps the games already analysed, and the next run skips them.
 - Afterwards, the same chain imports new games: each step only processes what
   is new.
+- **Metrics report:** `python -m src.metrics` prints every metric (M1–M7, with
+  the opponent controls and their bootstrap intervals; a few minutes). To keep
+  a copy in `data/reports/` (git-ignored), from the repository root:
+
+  ```
+  # Windows PowerShell
+  $env:PYTHONIOENCODING = "utf-8"
+  cmd /c "python -m src.metrics > data\reports\metrics_$(Get-Date -Format yyyy-MM-dd).txt 2>&1"
+
+  # macOS / Linux / Git Bash
+  PYTHONIOENCODING=utf-8 python -m src.metrics > data/reports/metrics_$(date +%F).txt 2>&1
+  ```
+
+  Create `data/reports/` first if it does not exist. `PYTHONIOENCODING` avoids
+  encoding errors on non-ASCII characters in the output; on Windows, `cmd /c`
+  keeps the file in UTF-8 (PowerShell 5.1's own `>` writes UTF-16).
 - **V2 model:** `python -m src.model.train`, then `python -m src.model.evaluate_model`
   (results in `model_evaluation/<timestamp>/`, read by the dashboard's model and
   risk-timeline pages). Always train before evaluating: the evaluation rebuilds
