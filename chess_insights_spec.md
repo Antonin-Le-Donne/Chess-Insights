@@ -401,11 +401,27 @@ For the primary estimate:
 - If it excludes zero and is entirely positive, I cross the threshold in a higher proportion of games.
 - If it includes zero, no statistically detectable difference is established.
 
-For the conditional median onset, the result is compared with the M1 blunder peak:
-- In `main`, the reference peak is move 20.
-- In `bullet`, the reference peak is move 15.
+**Reference M1 peak (revised 2026-11-15, replaces the fixed moves 20 / 15).** The M4 onset distribution is compared with the M1 blunder-rate peak. The reference peak is derived dynamically from the M1 results for the same player and `perf_group`, rather than using a fixed move number.
 
-If the lower bound of the 95% confidence interval for the median onset is later than the corresponding M1 peak, the primary low-time threshold is reached too late to plausibly explain the earlier blunder peak by itself.
+The reference curve uses only games with at least 40 plies (`n_plies >= 40`), consistently with the restricted M1 analysis used in Finding 1. This ensures that all included games reach at least move 20, removing survival bias up to and including that move. Beyond move 20, later buckets may still contain only games that lasted long enough to reach them.
+
+The reference peak is obtained from `scope.m1_peak_by_move`, which aggregates the M1 blunder rates across the three game-duration tiers, weighted by the number of moves. The peak is calculated independently for each player and `perf_group`.
+
+The analysis uses M1's existing five-move buckets, defined by:
+
+`bucket = floor(move_number / 5) * 5`
+
+Each bucket `b` covers moves `b` to `b + 4`, and its end is `b + 4`. A bucket is eligible to be considered the peak only if it contains at least 100 of the player's own moves. The peak is the eligible bucket with the highest M1 blunder rate.
+
+If multiple buckets share the highest rate, the reference peak is the end of the latest tied bucket. This conservative rule requires the onset to occur after all tied peak buckets before concluding that the threshold is reached later.
+
+If no bucket reaches the minimum observation count, the M1 peak is undefined and this interpretation rule is not applied.
+
+For a defined peak, the lower bound of the 95% confidence interval for the conditional median onset is compared with the end of the reference peak bucket. If the lower bound is later than the end of that bucket, the primary low-time threshold is reached later than the M1 blunder peak, making it unlikely to explain the earlier concentration of blunders by itself.
+
+If the median onset confidence interval is not reported because either side has fewer than 30 threshold-crossing games, this interpretation rule is not applied.
+
+This comparison is exploratory and does not establish causality. The estimated peak may be unstable when the M1 curve is relatively flat around its maximum; small changes in the dataset may move the selected peak between adjacent buckets.
 
 The proportion of blunders played under the time-pressure threshold is reported descriptively, separately for `me` and `opponent`. It is not used as a confirmatory test and does not establish causality.
 
