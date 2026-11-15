@@ -143,9 +143,10 @@ games** (10,270 moves), which it never saw during training.
   at my level slips, not a weakness of mine.
 - **Player ratings are not used.** chess.com records ratings after the game, so
   they would leak the result. Removing them cost nothing measurable.
-- **Risk timeline.** A dashboard page replays any test game move by move: the
-  predicted risk of each of my moves, my actual blunders, my win%, and, on
-  hover, the three factors that weighed most in each prediction.
+- **Risky moments page.** A dashboard page lists my riskiest moves in the test
+  games. Each one opens on a chessboard with the move played, the predicted
+  risk and the three factors that weighed most, in plain words; the game can
+  then be replayed move by move under a risk strip.
 
 ## Honest limits
 
@@ -159,7 +160,7 @@ games** (10,270 moves), which it never saw during training.
 ## Status
 
 **Working, not complete.** The pipeline, the dashboard (seven metrics, filters,
-links to games, per-game risk timeline) and the V2 model work. Games are imported up to 2026-11-14
+links to games, a risky-moments page with a chessboard) and the V2 model work. Games are imported up to 2026-11-14
 (11,626 rated standard games, after removing 416 unrated or variant chess.com
 games that had slipped through); the numbers above still come from the
 2026-10-16 snapshot.

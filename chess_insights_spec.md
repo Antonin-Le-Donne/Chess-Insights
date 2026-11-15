@@ -446,6 +446,8 @@ All comparisons are descriptive or associational; they do not establish that low
 
 Streamlit, one page per metric M1–M7 plus an Overview page with: games count, date range, eval coverage %, current month's M3 tracking stat vs last month. Filters in sidebar: perf_type, date range, color, opening family. Charts with plotly (hover = drill down to game URL: `https://lichess.org/{game_id}`).
 
+**Dashboard principles (added 2026-11-15).** Each page answers one question. The answer comes first, as one sentence computed from the data (with the me-vs-opponents verdict where a control exists). One main chart per page; secondary charts, tables and method notes go into expanders. Plain-language labels; technical terms (SHAP, CIF, bootstrap) only inside a "How this is computed" expander. Applied page by page, starting with the V2 risk page as the template.
+
 ## V1 milestones
 
 1. **Week 1:** fetch + parse → moves.parquet with clocks. Sanity-check time_spent on 5 games manually.
@@ -522,11 +524,17 @@ Excluding games with `base_seconds <= 0` from the V2 dataset also changes the tr
 
 - **Games shown:** only games in the model's **test set** (held out chronologically). Training games would show in-sample predictions, which look better than the model really is.
 - **Data:** `evaluate_model.py` also saves `test_predictions.parquet` in the run folder: one row per test move (game_id, ply, move_number, predicted risk, actual label, win% before the move, clock before the move, top 3 SHAP contributions). The page reads the latest run, so a retrain updates it automatically.
-- **Chart, one game at a time:** predicted risk per move (line) with the test-set base rate as a reference line; actual blunders marked; my win% in a second panel on the same move axis. Moves outside the model population (ply ≤ 10, win% < 20) appear as gaps, not as zero risk.
-- **Hover:** move (SAN), predicted risk, the top 3 SHAP factors. **Click:** opens the game at that ply.
-- **Game picker:** filter by perf_type and result; sort by date or by highest predicted risk.
 - **Reading:** descriptive. A high-risk move followed by no blunder is not a model error: the risk is a probability, not a prediction of the outcome. No control group: it is a view of the model, not a metric.
 - **Placement:** a dedicated dashboard page.
+
+**Risk page layout (revised 2026-11-15, replaces the first one-game-at-a-time layout: two-panel chart + game picker).** Question: "Does the model see my blunders coming, and what do those moments look like?" Test games only.
+
+1. **Headline:** blunder rate by predicted-risk band — low (bottom 50%), medium, high (top 10%) — and the share of my blunders that fell in the high band. One bar chart, 3 bars.
+2. **Moments list:** test moves sorted by predicted risk, filterable by blunder / time control, with the main factor in plain words.
+3. **Selected moment:** board at the position before the move (python-chess SVG, my orientation), the move played as an arrow (red if a blunder), and the top 3 factors as plain sentences.
+4. **Game replay** of that game: board + navigation as below, with a single risk strip (one bar per move, blunders in red) instead of the two-panel chart.
+
+**Board replay (added 2026-11-15):** the board shows the position of the selected game at the current move, oriented to my color, with the last move highlighted. Navigation: first / previous / next / last buttons and a move slider; clicking a bar on the risk strip jumps the board to the position **before** that move (the one the model predicted from). A vertical line on the strip marks the current move. Beside the board: the move played, its predicted risk, my win% and its top 3 factors; blunders are flagged. Rendered with `chess.svg` (python-chess), no new dependency. No autoplay (decided 2026-11-15).
 
 ## V2 milestones
 

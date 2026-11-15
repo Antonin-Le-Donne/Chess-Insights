@@ -1,50 +1,69 @@
-"""Per-game risk timeline (spec V2, "Per-game risk timeline", 2026-11-14).
+"""V2 risk page (spec V2, "Per-game risk timeline" + "Risk page layout",
+revised 2026-11-15).
 
-One test-set game at a time: the model's predicted blunder risk on each of my
-moves, my actual blunders, and my win% on the same move axis. Reads
-test_predictions.parquet from the latest evaluation run that has one.
+Question: does the model see my blunders coming, and what do those moments
+look like? Test games only (out-of-sample predictions), read from
+test_predictions.parquet of the latest evaluation run.
+
+Layout, following the dashboard principles (spec section 6): the answer
+first (blunder rate by risk band), then the riskiest moments, then the
+selected moment on a board, then a replay of that game.
 """
 
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import numpy as np
+import chess
+import chess.svg
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
-from app.filters import (
-    format_time_control,
-    game_url,
-    link_column,
-    render_filters_not_applied,
-    selected_points,
-)
-from app.model_labels import feature_label
+from app.filters import game_url, render_filters_not_applied
 from app.ui import load_ui
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 EVALUATION_DIR = PROJECT_ROOT / "model_evaluation"
 PREDICTIONS_FILE = "test_predictions.parquet"
 TOP_FACTORS = 3
+LIST_SIZE = 100
 
-RESULT_LABELS = {1.0: "Win", 0.5: "Draw", 0.0: "Loss"}
-RISK_COLOR = "#2E7DFF"
-BLUNDER_COLOR = "#F87171"
-WIN_PCT_COLOR = "#B8E35A"
-REFERENCE_COLOR = "#F4BE55"
+LOW_BAND_QUANTILE = 0.50   # bottom 50% of predicted risk
+HIGH_BAND_QUANTILE = 0.90  # top 10% of predicted risk
+BAND_ORDER = ["Low risk", "Medium risk", "High risk"]
 
+ACCENT = "#C7F36B"
+INFO = "#7CC4FF"
+DANGER = "#FF6B6B"
+MUTED = "#8F9893"
+TEXT = "#F4F2EA"
+
+BOARD_COLORS = {
+    "square light": "#E7E2D2",
+    "square dark": "#7A8C6E",
+    "square light lastmove": "#D9E89A",
+    "square dark lastmove": "#9DB858",
+    "margin": "#12171C",
+    "coord": "#D2D6D0",
+}
+
+PLOT_LAYOUT = dict(
+    template="plotly_dark",
+    font=dict(family="Inter", size=14, color=TEXT),
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+)
+
+
+# ---------- data ----------
 
 def find_latest_predictions() -> Path | None:
-    """Most recent model_evaluation/<timestamp>/test_predictions.parquet.
-
-    Run folders are named YYYY-MM-DD_HH-MM-SS, so names sort in time order.
-    """
+    """Most recent model_evaluation/<timestamp>/test_predictions.parquet."""
     files = sorted(
         EVALUATION_DIR.glob(f"*/{PREDICTIONS_FILE}"),
         key=lambda path: path.parent.name,
@@ -54,173 +73,408 @@ def find_latest_predictions() -> Path | None:
 
 @st.cache_data
 def load_predictions(path: str) -> pd.DataFrame:
-    return pd.read_parquet(path)
+    """Test predictions joined with game context, with a risk band per move."""
+    predictions = pd.read_parquet(path)
+    games = pd.read_parquet(
+        "data/processed/games.parquet",
+        columns=["game_id", "date_utc", "platform", "perf_type", "my_color", "base_seconds"],
+    )
+    predictions = predictions.merge(games, on="game_id", how="left")
+
+    low_cut = predictions["predicted_risk"].quantile(LOW_BAND_QUANTILE)
+    high_cut = predictions["predicted_risk"].quantile(HIGH_BAND_QUANTILE)
+    predictions["band"] = "Medium risk"
+    predictions.loc[predictions["predicted_risk"] < low_cut, "band"] = "Low risk"
+    predictions.loc[predictions["predicted_risk"] >= high_cut, "band"] = "High risk"
+    return predictions
 
 
 @st.cache_data
-def load_games() -> pd.DataFrame:
-    return pd.read_parquet("data/processed/games.parquet")
-
-
-@st.cache_data
-def load_my_moves(game_ids: tuple[str, ...]) -> pd.DataFrame:
-    """My moves in the test games, with my win% before each move."""
-    moves = pd.read_parquet(
+def load_test_game_moves(game_ids: tuple[str, ...]) -> pd.DataFrame:
+    """Every ply of the test games, to replay them on a board."""
+    return pd.read_parquet(
         "data/processed/moves.parquet",
-        columns=["game_id", "ply", "move_number", "is_my_move", "san", "win_pct", "move_quality"],
+        columns=["game_id", "ply", "move_number", "is_my_move", "san", "uci", "move_quality"],
         filters=[("game_id", "in", list(game_ids))],
-    )
-    # On my rows, win_pct is already MY win% before my move.
-    return moves[moves["is_my_move"]].drop(columns="is_my_move")
+    ).sort_values(["game_id", "ply"])
 
 
-def game_table(predictions: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
-    """One row per test game: context, result, risk summary and blunders."""
-    per_game = predictions.groupby("game_id").agg(
-        max_risk=("predicted_risk", "max"),
-        mean_risk=("predicted_risk", "mean"),
-        n_blunders=("is_blunder", "sum"),
-        n_model_moves=("predicted_risk", "size"),
-    )
-    table = games.set_index("game_id").loc[
-        per_game.index,
-        ["date_utc", "platform", "perf_type", "base_seconds", "increment_seconds",
-         "my_color", "result_for_me", "my_rating", "opp_rating"],
-    ].join(per_game)
-    table["result"] = table["result_for_me"].map(RESULT_LABELS).fillna("Unknown")
-    table["time_control"] = [
-        format_time_control(base, inc)
-        for base, inc in zip(table["base_seconds"], table["increment_seconds"])
-    ]
-    return table.reset_index()
+# ---------- plain-language factors ----------
+
+def _number(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def game_option_label(row: pd.Series) -> str:
-    blunders = int(row["n_blunders"])
-    return (
-        f"{row['date_utc']:%Y-%m-%d} · {row['platform']} {row['perf_type']} "
-        f"{row['time_control']} · {row['my_color']} · {row['result']} · "
-        f"max risk {row['max_risk']:.0%} · {blunders} blunder{'s' if blunders != 1 else ''}"
-    )
+def factor_sentence(feature: str, value: object) -> str:
+    """One model factor as a short sentence a non-specialist can read."""
+    v = _number(value)
+    text = str(value)
+    if feature == "eval_before_move" and v is not None:
+        return f"I was at {v:.0f}% win probability"
+    if feature == "eval_volatility" and v is not None:
+        return f"the evaluation had been swinging (spread of {v:.0f} win% points over the last moves)"
+    if feature == "clock_before_move_pct" and v is not None:
+        return f"{v:.0%} of my starting time left"
+    if feature == "clock_before_move" and v is not None:
+        return f"{v:.0f} s left on my clock"
+    if feature == "material_imbalance" and v is not None:
+        return f"material balance {v:+.0f} (pawn = 1)"
+    if feature == "material_count" and v is not None:
+        return f"{v:.0f} points of material still on the board"
+    if feature == "queens_on_board":
+        return "queens still on the board" if text == "yes" else "queens already traded"
+    if feature == "n_legal_moves" and v is not None:
+        return f"{v:.0f} legal moves to choose from"
+    if feature == "hanging_pieces" and v is not None:
+        return f"{v:.0f} of my pieces attacked more than defended"
+    if feature == "checks_available" and v is not None:
+        return f"{v:.0f} checks available"
+    if feature == "rolling_time_mean_3" and v is not None:
+        return f"about {v:.0f} s per move over my last 3 moves"
+    if feature == "previous_time_spent" and v is not None:
+        return f"{v:.0f} s spent on my previous move"
+    if feature == "previous_long_think":
+        return "I had just made a very long think" if v == 1 else "no long think just before"
+    if feature == "time_pressure_before_move":
+        return "already in time trouble" if text == "yes" else "not in time trouble"
+    if feature == "move_number" and v is not None:
+        return f"move {v:.0f}"
+    if feature == "has_increment":
+        return "increment game" if text == "yes" else "no increment"
+    if feature == "phase":
+        return f"{text} phase"
+    if feature == "perf_type":
+        return f"{text} game"
+    if feature == "opening_family":
+        return f"{text} opening" if text != "n/a" else "opening outside the main families"
+    if feature == "eval_state_before_move":
+        return f"position {text} for me"
+    return f"{feature.replace('_', ' ')} = {text}"
 
 
-def factor_text(row: pd.Series) -> str:
-    """Hover lines for the top SHAP factors of one move."""
+def factor_lines(row: pd.Series) -> list[tuple[str, bool]]:
+    """Top factors of one move: (sentence, raises_risk)."""
     lines = []
     for rank in range(1, TOP_FACTORS + 1):
         feature = row.get(f"factor_{rank}")
-        if not isinstance(feature, str):
-            continue
-        shap_value = row[f"factor_{rank}_shap"]
-        direction = "raises" if shap_value > 0 else "lowers"
-        lines.append(
-            f"{feature_label(feature)} = {row[f'factor_{rank}_value']} "
-            f"({direction} risk, {shap_value:+.2f})"
-        )
-    return "<br>".join(lines)
+        if isinstance(feature, str):
+            lines.append(
+                (factor_sentence(feature, row[f"factor_{rank}_value"]), row[f"factor_{rank}_shap"] > 0)
+            )
+    return lines
 
 
-def build_timeline(game_moves: pd.DataFrame, base_rate: float) -> go.Figure:
-    """Risk panel (top) and win% panel (bottom), shared move-number axis."""
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.6, 0.4],
-        subplot_titles=("Predicted blunder risk", "My win% before the move"),
+def main_reason(row: pd.Series) -> str:
+    sentence, raises = factor_lines(row)[0]
+    return ("↑ " if raises else "↓ ") + sentence
+
+
+# ---------- board ----------
+
+def board_after(ucis: list[str], n_plies: int) -> chess.Board:
+    """Position after the first n_plies half-moves of the game."""
+    board = chess.Board()
+    for uci in ucis[:n_plies]:
+        board.push(chess.Move.from_uci(uci))
+    return board
+
+
+def render_board(
+    board: chess.Board,
+    my_color: str,
+    arrow_uci: str | None = None,
+    arrow_is_blunder: bool = False,
+) -> None:
+    """Draw the board as an SVG image, oriented to my color."""
+    arrows = []
+    if arrow_uci:
+        move = chess.Move.from_uci(arrow_uci)
+        color = "#FF6B6Bcc" if arrow_is_blunder else "#C7F36Bcc"
+        arrows.append(chess.svg.Arrow(move.from_square, move.to_square, color=color))
+    svg = chess.svg.board(
+        board,
+        orientation=chess.WHITE if my_color == "white" else chess.BLACK,
+        lastmove=board.peek() if board.move_stack and not arrow_uci else None,
+        arrows=arrows,
+        colors=BOARD_COLORS,
+        size=440,
+    )
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    st.markdown(
+        f'<img src="data:image/svg+xml;base64,{encoded}" '
+        'style="width:100%;max-width:440px;border-radius:12px;" alt="Chess board">',
+        unsafe_allow_html=True,
     )
 
-    # NaN risk (outside the model population) leaves a gap in the line.
-    fig.add_trace(
-        go.Scatter(
-            x=game_moves["move_number"],
-            y=game_moves["predicted_risk"],
-            mode="lines+markers",
-            name="Predicted risk",
-            line=dict(color=RISK_COLOR, width=2),
-            marker=dict(size=6),
-            connectgaps=False,
-            customdata=np.stack(
-                [game_moves["ply"], game_moves["san"], game_moves["hover_factors"]], axis=1
-            ),
-            hovertemplate=(
-                "<b>Move %{x}: %{customdata[1]}</b><br>"
-                "Predicted risk: %{y:.1%}<br>"
-                "%{customdata[2]}"
-                "<extra></extra>"
-            ),
-        ),
-        row=1,
-        col=1,
+
+def move_label(move_number: int, san: str, is_white: bool) -> str:
+    return f"{move_number}. {san}" if is_white else f"{move_number}… {san}"
+
+
+# ---------- sections ----------
+
+def render_headline(predictions: pd.DataFrame) -> None:
+    """The answer first: blunder rate per risk band."""
+    by_band = (
+        predictions.groupby("band")["is_blunder"]
+        .agg(rate="mean", n="size", blunders="sum")
+        .reindex(BAND_ORDER)
+    )
+    low, high = by_band.loc["Low risk", "rate"], by_band.loc["High risk", "rate"]
+    share_caught = by_band.loc["High risk", "blunders"] / by_band["blunders"].sum()
+    base_rate = predictions["is_blunder"].mean()
+
+    st.markdown(
+        f"#### When the model rates a move as **high risk**, I blunder **{high:.0%}** of the "
+        f"time, against **{low:.1%}** on low-risk moves. **{share_caught:.0%}** of my "
+        "blunders happened on the moves it flagged as high risk."
     )
 
-    blunders = game_moves[game_moves["move_quality"].eq("blunder")]
-    if not blunders.empty:
-        # Blunders outside the model population have no risk: draw them at 0.
-        blunder_y = blunders["predicted_risk"].fillna(0)
-        fig.add_trace(
-            go.Scatter(
-                x=blunders["move_number"],
-                y=blunder_y,
-                mode="markers",
-                name="My blunder",
-                marker=dict(symbol="x", size=13, color=BLUNDER_COLOR, line=dict(width=1)),
-                customdata=np.stack([blunders["ply"], blunders["san"]], axis=1),
-                hovertemplate=(
-                    "<b>Blunder — move %{x}: %{customdata[1]}</b>"
-                    "<extra></extra>"
-                ),
-            ),
-            row=1,
-            col=1,
+    fig = go.Figure(
+        go.Bar(
+            x=["Low risk<br>(bottom half)", "Medium risk", "High risk<br>(top 10%)"],
+            y=by_band["rate"],
+            marker_color=[INFO, MUTED, DANGER],
+            text=[f"{rate:.1%}" for rate in by_band["rate"]],
+            textposition="outside",
+            customdata=by_band["n"],
+            hovertemplate="%{y:.1%} of %{customdata:,} moves were blunders<extra></extra>",
         )
-
+    )
     fig.add_hline(
         y=base_rate,
-        line_dash="dash",
-        line_color=REFERENCE_COLOR,
-        annotation_text=f"Test-set average {base_rate:.1%}",
+        line_dash="dot",
+        line_color=MUTED,
+        annotation_text=f"average {base_rate:.1%}",
         annotation_position="top left",
-        annotation_font_color=REFERENCE_COLOR,
-        row=1,
-        col=1,
     )
-
-    fig.add_trace(
-        go.Scatter(
-            x=game_moves["move_number"],
-            y=game_moves["win_pct"] / 100,
-            mode="lines",
-            name="My win%",
-            line=dict(color=WIN_PCT_COLOR, width=2),
-            customdata=game_moves[["san"]].to_numpy(),
-            hovertemplate="Move %{x}: %{customdata[0]}<br>My win%: %{y:.0%}<extra></extra>",
-        ),
-        row=2,
-        col=1,
-    )
-    fig.add_hrect(
-        y0=0.70, y1=0.80, fillcolor=REFERENCE_COLOR, opacity=0.12, line_width=0,
-        annotation_text="70–80% zone", annotation_position="top left",
-        row=2, col=1,
-    )
-    fig.add_hline(y=0.5, line_dash="dot", line_color="gray", row=2, col=1)
-
     fig.update_layout(
-        template="plotly_dark",
-        font=dict(family="Inter", size=14, color="#DCE3E9"),
-        height=640,
-        hovermode="closest",
-        legend=dict(orientation="h", yanchor="bottom", y=1.06, x=0),
-        margin=dict(l=40, r=30, t=70, b=40),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        **PLOT_LAYOUT,
+        height=300,
+        margin=dict(l=10, r=10, t=30, b=10),
+        yaxis=dict(tickformat=".0%", title="Blunder rate", gridcolor="rgba(255,255,255,0.07)"),
+        showlegend=False,
     )
-    fig.update_yaxes(tickformat=".0%", rangemode="tozero", row=1, col=1)
-    fig.update_yaxes(tickformat=".0%", range=[0, 1], row=2, col=1)
-    fig.update_xaxes(title="Move number", row=2, col=1)
-    return fig
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def render_moments_list(predictions: pd.DataFrame) -> pd.Series | None:
+    """The riskiest moments, filterable; returns the selected one."""
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        show = st.radio(
+            "Show",
+            ["All moments", "Blunders only", "No blunder"],
+            horizontal=True,
+            key="risk_show",
+        )
+    with col2:
+        perf_types = st.multiselect(
+            "Time control",
+            sorted(predictions["perf_type"].dropna().unique()),
+            placeholder="All",
+            key="risk_perf_types",
+        )
+
+    shown = predictions
+    if show == "Blunders only":
+        shown = shown[shown["is_blunder"]]
+    elif show == "No blunder":
+        shown = shown[~shown["is_blunder"]]
+    if perf_types:
+        shown = shown[shown["perf_type"].isin(perf_types)]
+    if shown.empty:
+        st.info("No moment matches these filters.")
+        return None
+    shown = shown.nlargest(LIST_SIZE, "predicted_risk").reset_index(drop=True)
+
+    table = pd.DataFrame(
+        {
+            "Date": shown["date_utc"].dt.strftime("%Y-%m-%d"),
+            "Time control": shown["perf_type"],
+            "Move": [
+                move_label(n, san, color == "white")
+                for n, san, color in zip(shown["move_number"], shown["san"], shown["my_color"])
+            ],
+            "Risk": shown["predicted_risk"].map("{:.0%}".format),
+            "Blunder": shown["is_blunder"].map({True: "✗ blunder", False: "—"}),
+            "Main reason": [main_reason(row) for _, row in shown.iterrows()],
+        }
+    )
+    event = st.dataframe(
+        table,
+        hide_index=True,
+        width="stretch",
+        height=280,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="risk_moments_table",
+    )
+    rows = event.selection.rows if event and event.selection else []
+    st.caption(
+        f"The {min(LIST_SIZE, len(shown))} riskiest of my moves in the test games. "
+        "Click a row to see the position. ↑ raised the predicted risk, ↓ lowered it."
+    )
+    return shown.iloc[rows[0] if rows else 0]
+
+
+def render_moment(moment: pd.Series, game_moves: pd.DataFrame) -> None:
+    """The selected moment on a board, with the reasons in plain words."""
+    ucis = game_moves["uci"].tolist()
+    ply = int(moment["ply"])
+    is_white = moment["my_color"] == "white"
+    blunder = bool(moment["is_blunder"])
+
+    col_board, col_text = st.columns([5, 6], gap="large")
+    with col_board:
+        render_board(
+            board_after(ucis, ply - 1),
+            moment["my_color"],
+            arrow_uci=ucis[ply - 1],
+            arrow_is_blunder=blunder,
+        )
+    with col_text:
+        verdict = (
+            f"<span style='color:{DANGER}'>blunder</span>"
+            if blunder
+            else f"<span style='color:{ACCENT}'>no blunder</span>"
+        )
+        st.markdown(
+            f"### {move_label(int(moment['move_number']), moment['san'], is_white)} — {verdict}",
+            unsafe_allow_html=True,
+        )
+        clock = moment["clock_before_move"]
+        base = moment["base_seconds"]
+        clock_text = (
+            f"{clock:.0f} s left ({clock / base:.0%} of my time)"
+            if pd.notna(clock) and pd.notna(base) and base > 0
+            else "unknown"
+        )
+        st.markdown(
+            f"- **Predicted risk:** {moment['predicted_risk']:.0%} "
+            f"(average move: {st.session_state['risk_base_rate']:.1%})\n"
+            f"- **My win probability before the move:** {moment['eval_before_move']:.0f}%\n"
+            f"- **Clock:** {clock_text}"
+        )
+        st.markdown("**What made the model worried — or calm:**")
+        st.markdown(
+            "\n".join(
+                f"- {'↑' if raises else '↓'} {sentence} "
+                f"({'raises' if raises else 'lowers'} the risk)"
+                for sentence, raises in factor_lines(moment)
+            )
+        )
+        url = game_url(moment["game_id"], moment["my_color"], ply - 1)
+        st.markdown(f"[Open this position in the game]({url}) · {moment['date_utc']:%Y-%m-%d}")
+
+
+def _set_replay(value: int) -> None:
+    st.session_state["replay_ply"] = value
+
+
+def _jump_from_strip() -> None:
+    """Click on the risk strip: show the position BEFORE that move."""
+    state = st.session_state.get("risk_strip")
+    try:
+        points = state["selection"]["points"]
+    except (KeyError, TypeError):
+        return
+    if points and points[0].get("customdata"):
+        st.session_state["replay_ply"] = max(int(points[0]["customdata"][0]) - 1, 0)
+
+
+def render_replay(moment: pd.Series, game_moves: pd.DataFrame, predictions: pd.DataFrame) -> None:
+    """Replay the selected game, with a single risk strip under the board."""
+    game_id = moment["game_id"]
+    ucis = game_moves["uci"].tolist()
+    n_plies = len(ucis)
+
+    # A new moment resets the replay to the position before that move.
+    moment_key = (game_id, int(moment["ply"]))
+    if st.session_state.get("replay_moment") != moment_key:
+        st.session_state["replay_moment"] = moment_key
+        st.session_state["replay_ply"] = int(moment["ply"]) - 1
+    st.session_state["replay_ply"] = min(max(st.session_state["replay_ply"], 0), n_plies)
+    current = st.session_state["replay_ply"]
+
+    b1, b2, b3, b4, _ = st.columns([1, 1, 1, 1, 6])
+    b1.button("⏮", on_click=_set_replay, args=(0,), help="Start", width="stretch")
+    b2.button("◀", on_click=_set_replay, args=(max(current - 1, 0),), help="Previous half-move", width="stretch")
+    b3.button("▶", on_click=_set_replay, args=(min(current + 1, n_plies),), help="Next half-move", width="stretch")
+    b4.button("⏭", on_click=_set_replay, args=(n_plies,), help="End", width="stretch")
+    st.slider("Half-move", 0, n_plies, key="replay_ply", label_visibility="collapsed")
+    current = st.session_state["replay_ply"]
+
+    game_predictions = predictions[predictions["game_id"].eq(game_id)].set_index("ply")
+    my_moves = game_moves[game_moves["is_my_move"]]
+
+    col_board, col_strip = st.columns([5, 6], gap="large")
+    with col_board:
+        render_board(board_after(ucis, current), moment["my_color"])
+    with col_strip:
+        if current == 0:
+            st.markdown("**Starting position.**")
+        else:
+            last = game_moves.iloc[current - 1]
+            label = move_label(int(last["move_number"]), last["san"], int(last["ply"]) % 2 == 1)
+            who = "my move" if last["is_my_move"] else "opponent's move"
+            details = ""
+            if last["is_my_move"] and int(last["ply"]) in game_predictions.index:
+                details = f" · predicted risk {game_predictions.loc[int(last['ply']), 'predicted_risk']:.0%}"
+            flag = ""
+            if last["move_quality"] == "blunder":
+                flag = " · **my blunder**" if last["is_my_move"] else " · opponent's blunder"
+            st.markdown(f"**After {label}** ({who}){details}{flag}")
+
+        risk = my_moves["ply"].map(game_predictions["predicted_risk"])
+        is_blunder = my_moves["move_quality"].eq("blunder")
+        colors = [DANGER if b else INFO for b in is_blunder]
+        fig = go.Figure(
+            go.Bar(
+                x=my_moves["move_number"],
+                y=risk.fillna(0),
+                marker_color=colors,
+                customdata=list(zip(my_moves["ply"], my_moves["san"])),
+                hovertemplate=(
+                    "Move %{x}: %{customdata[1]}<br>Predicted risk %{y:.0%}<extra></extra>"
+                ),
+            )
+        )
+        fig.add_hline(
+            y=st.session_state["risk_base_rate"], line_dash="dot", line_color=MUTED,
+        )
+        if current > 0:
+            fig.add_vline(
+                x=int(game_moves.iloc[current - 1]["move_number"]),
+                line_color=ACCENT,
+                line_width=2,
+            )
+        fig.update_layout(
+            **PLOT_LAYOUT,
+            height=260,
+            margin=dict(l=10, r=10, t=10, b=10),
+            xaxis=dict(title="Move"),
+            yaxis=dict(tickformat=".0%", title="Predicted risk", gridcolor="rgba(255,255,255,0.07)"),
+            showlegend=False,
+            bargap=0.15,
+        )
+        st.plotly_chart(
+            fig,
+            width="stretch",
+            config={"displayModeBar": False},
+            on_select=_jump_from_strip,
+            selection_mode="points",
+            key="risk_strip",
+        )
+        st.caption(
+            "One bar per move of mine: the model's predicted risk (red = an actual blunder; "
+            "no bar = a move the model does not score: my first 5 moves, or a position "
+            "already below 20% where a blunder is impossible by definition). "
+            "Click a bar to see the position before that move."
+        )
 
 
 st.set_page_config(page_title="Chess Insights", layout="wide")
@@ -228,158 +482,59 @@ load_ui()
 
 
 def main() -> None:
-    st.title("V2 — Risk timeline of one game")
+    st.title("V2 — My risky moments")
     render_filters_not_applied(
         "only the model's chronological test games can be shown (honest, "
-        "out-of-sample predictions); pick one with the selectors below."
+        "out-of-sample predictions)."
     )
-    st.markdown(
-        """
-        **Question:** over one game, where did the model see danger coming,
-        and did my blunders happen there?
-
-        Each point is one of my moves: the model's predicted probability that
-        this move is a blunder, computed only from what was known before I
-        played it. Hover a point to see the three factors that weighed most.
-        """
-    )
+    st.markdown("**Question:** does the model see my blunders coming, and what do those moments look like?")
 
     path = find_latest_predictions()
     if path is None:
         st.warning(
-            "No `test_predictions.parquet` found. Run `python -m src.model.evaluate_model` "
-            "(after `python -m src.model.train`) to generate it."
+            "No `test_predictions.parquet` found. Run `python -m src.model.train`, then "
+            "`python -m src.model.evaluate_model`."
         )
         return
 
     predictions = load_predictions(str(path))
-    games = load_games()
-    base_rate = float(predictions["is_blunder"].mean())
-    table = game_table(predictions, games)
+    st.session_state["risk_base_rate"] = float(predictions["is_blunder"].mean())
 
-    st.caption(
-        f"Evaluation run: {path.parent.name} · {len(table):,} test games · "
-        f"{len(predictions):,} moves · test-set blunder rate {base_rate:.1%}"
-    )
+    render_headline(predictions)
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        perf_types = st.multiselect(
-            "Time control", sorted(table["perf_type"].unique()), placeholder="All"
-        )
-    with col2:
-        results = st.multiselect("Result", ["Win", "Draw", "Loss"], placeholder="All")
-    with col3:
-        sort_by = st.radio(
-            "Sort games by", ["Most recent", "Highest predicted risk"], horizontal=True
-        )
-
-    shown = table
-    if perf_types:
-        shown = shown[shown["perf_type"].isin(perf_types)]
-    if results:
-        shown = shown[shown["result"].isin(results)]
-    if shown.empty:
-        st.info("No test game matches these selectors.")
+    st.markdown("### The riskiest moments")
+    moment = render_moments_list(predictions)
+    if moment is None:
         return
-    shown = shown.sort_values(
-        "date_utc" if sort_by == "Most recent" else "max_risk", ascending=False
-    )
 
-    game_id = st.selectbox(
-        f"Game ({len(shown):,} available)",
-        shown["game_id"].tolist(),
-        format_func=lambda gid: game_option_label(shown.set_index("game_id").loc[gid]),
-    )
-    game = shown.set_index("game_id").loc[game_id]
+    game_moves_all = load_test_game_moves(tuple(predictions["game_id"].unique()))
+    game_moves = game_moves_all[game_moves_all["game_id"].eq(moment["game_id"])].reset_index(drop=True)
 
-    my_moves = load_my_moves(tuple(table["game_id"]))
-    game_moves = (
-        my_moves[my_moves["game_id"].eq(game_id)]
-        .merge(
-            predictions[predictions["game_id"].eq(game_id)].drop(
-                columns=["move_number", "san"]
-            ),
-            on=["game_id", "ply"],
-            how="left",
+    render_moment(moment, game_moves)
+
+    st.markdown("### Replay this game")
+    render_replay(moment, game_moves, predictions)
+
+    with st.expander("How this is computed"):
+        st.markdown(
+            f"""
+            - **Test games only** ({predictions['game_id'].nunique():,} games,
+              {len(predictions):,} of my moves, evaluation run `{path.parent.name}`). The model
+              never saw them while training, so these predictions are honest.
+            - **Predicted risk** = the LightGBM model's probability that my move is a blunder
+              (a drop of 20 win% points or more), computed only from what was known before
+              I played it.
+            - **Risk bands** are fixed on the predicted risk of all test moves: low = the bottom
+              half, high = the top 10%, medium = in between.
+            - **Reasons** are the three largest SHAP contributions of that move, translated
+              into words: they explain how the model used its inputs, not what caused the
+              blunder.
+            - **A probability, not a verdict:** a 30% move played well is not a model error.
+              Judge the model on many moves (page *Blunder Risk Model*), not on one.
+            - **No control group here:** this page describes the model, not my play compared
+              with my opponents.
+            """
         )
-        .sort_values("ply")
-        .reset_index(drop=True)
-    )
-    game_moves["hover_factors"] = [
-        factor_text(row) if pd.notna(row["predicted_risk"]) else "Outside the model population"
-        for _, row in game_moves.iterrows()
-    ]
-
-    url = game_url(game_id, game["my_color"])
-    st.markdown(
-        f"**{game['result']}** as {game['my_color']} · {game['platform']} "
-        f"{game['perf_type']} {game['time_control']} · "
-        f"{int(game['my_rating'])} vs {int(game['opp_rating'])} · [open the game]({url})"
-    )
-
-    event = st.plotly_chart(
-        build_timeline(game_moves, base_rate),
-        width="stretch",
-        config={"displayModeBar": False, "responsive": True},
-        on_select="rerun",
-        selection_mode="points",
-        key="risk_timeline_chart",
-    )
-    points = selected_points(event)
-    if points and points[0].get("customdata"):
-        ply, san = points[0]["customdata"][:2]
-        # Open the board BEFORE the move: the model predicts from that position.
-        move_url = game_url(game_id, game["my_color"], int(ply) - 1)
-        st.markdown(f"Selected move: [{san}, half-move {int(ply)}]({move_url})")
-
-    st.caption(
-        "Gaps in the risk line are moves outside the model population (my first "
-        "5 moves, positions below 20% win%, where a blunder is impossible by "
-        "definition, and the last move, which has no evaluation after it). A "
-        "blunder drawn at 0% is one of those moves. Click a point "
-        "for a link to the position before the move (Lichess only; chess.com opens "
-        "at the start)."
-    )
-
-    st.markdown("### Riskiest moves of this game")
-    riskiest = game_moves.dropna(subset=["predicted_risk"]).nlargest(5, "predicted_risk")
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "Move": riskiest["move_number"],
-                "Played": riskiest["san"],
-                "Predicted risk": riskiest["predicted_risk"].map("{:.1%}".format),
-                "Blunder?": riskiest["is_blunder"].map({True: "yes", False: "no"}),
-                "Main factor": riskiest["factor_1"].map(feature_label),
-                "Position": [
-                    game_url(game_id, game["my_color"], int(ply) - 1)
-                    for ply in riskiest["ply"]
-                ],
-            }
-        ),
-        hide_index=True,
-        width="stretch",
-        column_config={"Position": link_column("Position")},
-    )
-
-    st.markdown("### How to read this")
-    st.markdown(
-        """
-        - **The risk is a probability, not a verdict.** A 30% move that I played
-          well is not a model error: 7 times out of 10, that is exactly what
-          should happen. Judge the model on many games (page *Blunder Risk
-          Model*: calibration, PR-AUC), not on one.
-        - **Only test games are shown.** The model never saw them during
-          training, so these predictions are honest. Training games would look
-          better than the model really is.
-        - **SHAP factors** explain the model's reasoning for that move, in
-          log-odds: "raises risk" pushes the prediction up. They describe how
-          the model uses its inputs, not what caused the blunder.
-        - **No control group here:** this page is a view of the model, not a
-          metric about my play.
-        """
-    )
 
 
 if __name__ == "__main__":
