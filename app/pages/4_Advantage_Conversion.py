@@ -15,7 +15,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from app.controls import GROUP_LABELS, control_reading, selection_key
+from app.controls import (
+    GROUP_LABELS,
+    control_reading,
+    render_badge,
+    selection_key,
+    verdict_color,
+)
 from app.filters import format_time_control, game_urls, link_column, sidebar_filtered
 from app.ui import load_ui
 from src.metrics import m3_control, m3_greed_conversion
@@ -25,9 +31,7 @@ RESULT_LABELS = {1.0: "Win", 0.5: "Draw", 0.0: "Loss"}
 
 ME_COLOR = "#C7F36B"
 OPPONENT_COLOR = "#8F9893"
-GREEN = "#7BE0A3"
 RED = "#FF6B6B"
-GRAY = "#B7C2CC"
 
 PLOT_LAYOUT = dict(
     template="plotly_dark",
@@ -62,11 +66,9 @@ def render_answer(mine: pd.Series, theirs: pd.Series, group_label: str) -> None:
         "I convert more often than my opponents",
         "My opponents convert more often than me",
     )
-    color = GREEN if mine["difference_ci_lower"] > 0 else RED if mine["difference_ci_upper"] < 0 else GRAY
-    st.markdown(
-        f"<span style='color:{color};font-size:0.8rem;font-weight:600;letter-spacing:0.04em;"
-        f"text-transform:uppercase'>● {reading}</span>",
-        unsafe_allow_html=True,
+    render_badge(
+        reading,
+        verdict_color(mine["difference_ci_lower"], mine["difference_ci_upper"], good_when_negative=False),
     )
     st.markdown(
         f"#### In {group_label.lower()}, once I reach a winning position (80%), I win "

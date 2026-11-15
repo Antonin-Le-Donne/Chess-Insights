@@ -16,14 +16,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app.controls import GROUP_LABELS
+from app.controls import BADGE_BLUE, GROUP_LABELS, render_badge
 from app.filters import sidebar_filtered
 from app.ui import load_ui
 from src.metrics import m6_swindle_profile
 
 ME_COLOR = "#C7F36B"
 OPPONENT_COLOR = "#8F9893"
-BLUE = "#7CC4FF"
 
 PLOT_LAYOUT = dict(
     template="plotly_dark",
@@ -81,11 +80,7 @@ def share_saved_on_time(terminations: pd.DataFrame) -> float:
 
 
 def render_answer(mine: pd.Series, theirs: pd.Series | None, on_time: float, group_label: str) -> None:
-    st.markdown(
-        f"<span style='color:{BLUE};font-size:0.8rem;font-weight:600;letter-spacing:0.04em;"
-        "text-transform:uppercase'>● Compared with my opponents · no interval yet</span>",
-        unsafe_allow_html=True,
-    )
+    render_badge("Compared with my opponents · no interval yet", BADGE_BLUE)
     sentence = (
         f"#### In {group_label.lower()}, from a lost position ({int(mine['n']):,} games), I score "
         f"**{mine['score_pct']:.0%}** where the engine expects **{mine['expected_score']:.0%}**: "

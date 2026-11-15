@@ -139,7 +139,7 @@ def finding_cards(summary: dict, risk: pd.DataFrame | None) -> list[dict]:
             "text": f"From a lost position I score **{100 * s['me_vs_expected']:+.0f} pts** above "
                     f"the engine's expectation; my opponents **{100 * s['opponent_vs_expected']:+.0f} pts**.",
             "badge": "no_ci",
-            "page": "pages/12_Swindle_Profile.py",
+            "page": "pages/7_Swindle_Profile.py",
         })
     if "m4" in summary:
         s = summary["m4"]
@@ -185,7 +185,7 @@ def finding_cards(summary: dict, risk: pd.DataFrame | None) -> list[dict]:
             "text": f"After a win I score **{100 * s['after_win']:+.1f} pts** above my rating's "
                     f"expectation; after a loss **{100 * s['after_loss']:+.1f} pts**.",
             "badge": "not_compared",
-            "page": "pages/13_Time_And_Session.py",
+            "page": "pages/8_Time_And_Session.py",
         })
     if risk is not None:
         cards.append({
@@ -193,7 +193,7 @@ def finding_cards(summary: dict, risk: pd.DataFrame | None) -> list[dict]:
             "text": f"On moves it flags as high risk I blunder **{risk.loc['High risk', 'rate']:.0%}** "
                     f"of the time, against **{risk.loc['Low risk', 'rate']:.1%}** on low-risk moves.",
             "badge": "model",
-            "page": "pages/14_Risk_Timeline.py",
+            "page": "pages/9_Risky_Moments.py",
         })
     return cards
 

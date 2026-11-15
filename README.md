@@ -240,6 +240,6 @@ streamlit run app/dashboard.py
   keeps the file in UTF-8 (PowerShell 5.1's own `>` writes UTF-16).
 - **V2 model:** `python -m src.model.train`, then `python -m src.model.evaluate_model`
   (results in `model_evaluation/<timestamp>/`, read by the dashboard's model and
-  risk-timeline pages). Always train before evaluating: the evaluation rebuilds
+  risky-moments pages). Always train before evaluating: the evaluation rebuilds
   the test set from the current data, so after an import it no longer matches
   the saved model's split.

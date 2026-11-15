@@ -9,8 +9,32 @@ compatible with a pattern shared at my level (not proof of equality).
 from __future__ import annotations
 
 import pandas as pd
+import streamlit as st
 
 GROUP_LABELS = {"main": "Blitz / rapid", "bullet": "Bullet"}
+
+BADGE_GREEN = "#7BE0A3"
+BADGE_RED = "#FF6B6B"
+BADGE_GRAY = "#B7C2CC"
+BADGE_BLUE = "#7CC4FF"
+
+
+def render_badge(text: str, color: str) -> None:
+    """Small coloured verdict label shown above a page's answer sentence."""
+    st.markdown(
+        f"<span style='color:{color};font-size:0.8rem;font-weight:600;letter-spacing:0.04em;"
+        f"text-transform:uppercase'>● {text}</span>",
+        unsafe_allow_html=True,
+    )
+
+
+def verdict_color(lower: float, upper: float, good_when_negative: bool) -> str:
+    """Green if the difference interval is on the favourable side of 0, red if on
+    the unfavourable side, gray if it contains 0 (spec reading rule)."""
+    if pd.isna(lower) or pd.isna(upper) or lower <= 0 <= upper:
+        return BADGE_GRAY
+    favourable = upper < 0 if good_when_negative else lower > 0
+    return BADGE_GREEN if favourable else BADGE_RED
 
 
 def selection_key(games: pd.DataFrame) -> int:
