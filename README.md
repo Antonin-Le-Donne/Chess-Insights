@@ -51,7 +51,7 @@ caveats are in [docs/findings_details.md](docs/findings_details.md)._
 | 1 | When do I blunder most? | Around moves 15–20, not at the end of the game | Not yet |
 | 2 | Do long thinks lead to blunders? | Yes, about 4× more often, but the same is true for my opponents | Yes: shared, not personal |
 | 3 | Do I convert winning positions? | 73% of the time, more often than my opponents (65%) | Yes: better than them |
-| 4 | Is the clock behind the mistakes? | No. My clock only runs really low around move 67 | Not yet |
+| 4 | Is the clock behind the mistakes? | No. Time pressure comes far too late, and I reach it less often than my opponents | Yes: less often than them |
 | 5 | Which opening hurts me? | The Italian Game as Black | No |
 | 6 | Do I save lost games? | Yes, clearly more than my opponents do | Yes: a personal strength |
 | 7 | Do time of day or tiredness matter? | No. I play slightly better after a win | Against the expected score from ratings |
@@ -78,9 +78,15 @@ win 64.8%: **+7.9 points** for me (CI +5.7 to +10.0). One limit: their rate
 also depends on my defence, which is strong (finding 6). The 27% of games I
 don't convert are still the biggest pool of points I can win back.
 
-**4. Time trouble and blunders are two separate problems.** My clock only runs
-really low around move 67, long after the blunder peak of finding 1. My
-mid-game mistakes are not caused by a lack of time.
+**4. Time trouble and blunders are two separate problems.** _(Updated
+2026-11-15.)_ I count a player as in time pressure once their clock falls
+below 10% of the starting time. That happens in **14%** of my blitz/rapid
+games, against **21%** for my opponents in the same games (difference −6.7
+points, CI −7.6 to −5.6). And when it does happen, it starts around move 42,
+far after the blunder peak of finding 1 (moves 15–19). My mid-game mistakes
+are not caused by a lack of time. This does not prove that I manage my clock
+better: I may simply play faster, or my opponents may burn their time trying
+to beat my defence (finding 6).
 
 **5. The Italian Game as Black is my weakest opening.** I score 45.0% there over
 200 games, where the score counts 1 for a win and ½ for a draw. My opponents in
@@ -108,7 +114,8 @@ but small.
 - Long thinks: 3.5× for me against 3.0× for my opponents, with no detectable
   difference.
 - Conversion: 67.3% for me against 58.0% for my opponents (+9.3 points).
-- The clock runs low from move 54, as expected with a one-minute game.
+- Time pressure is far more common (38% of my games, against 48% for my
+  opponents) and starts around move 37, still well after the blunder peak.
 
 ## Predicting my blunders: the V2 model
 
@@ -147,7 +154,7 @@ games** (10,270 moves), which it never saw during training.
   probability barely moves.
 - The model's results move by about 0.01 PR-AUC from one training run to the
   next, so its +0.030 gain should not be read as a precise figure.
-- Findings 1, 4 and 5 are not yet compared with my opponents.
+- Findings 1 and 5 are not yet compared with my opponents.
 
 ## Status
 
@@ -159,8 +166,6 @@ games that had slipped through); the numbers above still come from the
 
 Next steps:
 
-- a new definition of the time-pressure onset (M4), tested against my
-  opponents;
 - an opponent control for the 70–80% zone, inside the pipeline;
 - one final refresh of every number on the full data, including retraining the
   model;

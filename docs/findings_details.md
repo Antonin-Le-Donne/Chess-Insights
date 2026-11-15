@@ -66,15 +66,40 @@ per-time-control split._
    does not prove a better conversion technique. In absolute terms, the 27%
    of unconverted games remain the largest pool of points I can still win.
 
-4. **Time pressure and the mid-game blunder peak look like separate
-   failure modes — the gap is wider than first thought.** Genuine time
-   pressure (median clock below 36 s in `metrics.py`; the spec says 20% of
-   base time and `config.toml` says 10% — threshold under review, see the
-   Blockers in `PROJECT_TRACKER.md`) only sets in around **move 67**
-   — well after the move 15-20 blunder-rate peak from finding #1.
-   Calculation load peaks in the middlegame independently of the clock
-   actually running low, and the two events are now further apart than
-   the original estimate (peak at 30-40, pressure at 56) suggested.
+4. **Time pressure comes too late to explain the mid-game blunder peak —
+   and I reach it less often than my opponents.** _(Redefined and re-run on
+   2026-11-15, on 11,620 eligible games after the out-of-scope cleanup;
+   protocol in the spec, "M4 — Time-pressure onset".)_ A player is in time
+   pressure once their clock after a move falls below **10% of the base
+   time**; the onset is the first such move, per player and per game.
+   - **Confirmatory (me vs opponents, same games):** the clock goes below
+     10% in **14.4%** of my blitz/rapid games (95% CI 13.6–15.3) vs
+     **21.1%** for my opponents (20.1–22.1): difference **−6.7 points
+     (−7.6 to −5.6)** by paired game-level bootstrap. Fewer of my games
+     reach time pressure than my opponents' — a side-specific result.
+   - **Against the blunder peak:** the reference peak, derived from the M1
+     curve itself (games of 40+ plies, buckets of ≥ 100 of my moves), is the
+     15–19 bucket, i.e. **move 19**. When I do reach time pressure, the
+     median onset is **move 42** (41–42), far after it — so the clock
+     cannot be what drives the mid-game peak; calculation load peaks first.
+   - **Exploratory:** the direction holds at every sensitivity threshold
+     (20% of base; 10, 20 and 30 seconds) and in every time control with at
+     least 100 games. In 10+0 I go below 10% in only **7 of 1,327 games**.
+     When time pressure does happen, it starts at the same move for both
+     sides (median difference about one move, CI 0 to 2): the gap is how
+     often, not how early. Of my blunders, 5.0% are played with the clock
+     already below the threshold after the move (opponents 7.3%) —
+     descriptive, and it includes blunders whose own long think crossed
+     the threshold.
+   - **Limits:** reaching low time less often does not prove better clock
+     management: a faster general pace, or opponents burning time while
+     trying to convert against my defence (finding #6: half my saves end on
+     time), would produce the same gap. Observational.
+   - **Definition history:** earlier versions of this finding quoted "move
+     67", the move at which the *median clock of the games still running*
+     fell below a hard-coded 36 s — a different quantity, dominated by long
+     games — and the spec, the config and the code disagreed on the
+     threshold (20% / 10% / 36 s). Fixed on 2026-11-14.
 
 5. **Opening mismatch hypothesis reversed — and the reversal itself
    reversed again with more data.** Sicilian as Black: 55.9% (n=1,395) —
@@ -165,10 +190,13 @@ opening numbers don't exist yet._
   my favour, with the same conversion/defence limit as finding #3. Median
   plies to finish: 32 (28 for converted wins), both a touch longer than
   main's 30/24.
-- **Time pressure sets in far earlier, as expected from the clock alone.**
-  Move 54, vs move 67 for main — a shorter base time (60s typical) makes
-  this mechanical rather than surprising, included mainly as a sanity
-  check that M4 behaves as it should.
+- **Time pressure: far more frequent than in blitz/rapid, and still less
+  frequent for me than for my opponents** _(2026-11-15 run, M4 protocol)_.
+  The clock goes below 10% of the base in **37.8%** of my bullet games
+  (36.4–39.2) vs **48.1%** for my opponents (46.7–49.5): **−10.3 points
+  (−12.0 to −8.6)**. Median onset **move 37** (36–37), against an M1
+  reference peak at move 19 (15–19 bucket) — same reading as finding #4.
+  The earlier "move 54" figure came from the old median-clock method.
 
 ## What Actually Predicts My Blunders? — V2 Model
 
