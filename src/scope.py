@@ -34,6 +34,49 @@ def filter_current_regime(
     return filtered_games, filtered_moves
 
 
+def exclude_non_proportional_clock_games(
+    games: pd.DataFrame,
+    moves: pd.DataFrame,
+    require_paired_clock: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Exclude games without a positive base clock and their move rows.
+
+    When ``require_paired_clock`` is True (M4), also require at least one
+    non-missing clock_after observation for each side. Both M4 analyses use
+    this option so they share exactly the same eligibility rule. The default
+    keeps the V2 dataset exclusion limited to non-proportional time controls.
+    """
+    valid_games = games.loc[
+        games["base_seconds"].gt(0).fillna(False)
+    ].copy()
+    valid_moves = moves.loc[
+        moves["game_id"].isin(valid_games["game_id"])
+    ].copy()
+
+    if require_paired_clock:
+        clock_moves = valid_moves.loc[
+            valid_moves["is_my_move"].isin([True, False])
+        ].copy()
+        clock_moves["_valid_clock"] = clock_moves["clock_after"].notna()
+        clock_coverage = (
+            clock_moves.groupby(["game_id", "is_my_move"])["_valid_clock"]
+            .any()
+            .unstack(fill_value=False)
+            .reindex(columns=[True, False], fill_value=False)
+        )
+        paired_game_ids = clock_coverage.index[
+            clock_coverage[True] & clock_coverage[False]
+        ]
+        valid_games = valid_games.loc[
+            valid_games["game_id"].isin(paired_game_ids)
+        ].copy()
+        valid_moves = valid_moves.loc[
+            valid_moves["game_id"].isin(valid_games["game_id"])
+        ].copy()
+
+    return valid_games, valid_moves
+
+
 def rating_trajectory(games: pd.DataFrame) -> pd.DataFrame:
     """Monthly mean my_rating per (platform, perf_type), for the plateau chart
     that justifies the floors above. One row per (month, platform, perf_type).

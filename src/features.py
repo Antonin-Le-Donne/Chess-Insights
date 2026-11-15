@@ -78,10 +78,35 @@ def add_phase(moves: pd.DataFrame) -> pd.Series:
 
     return phase_masked
 
-def add_time_pressure(moves: pd.DataFrame, games: pd.DataFrame, thresholds: dict) -> pd.Series:
-    """threshold for the time pressure"""
-    base_seconds = moves["game_id"].map(games.set_index("game_id")["base_seconds"])
-    return moves["clock_after"] < thresholds["time_pressure_pct"] * base_seconds
+def add_time_pressure(
+    moves: pd.DataFrame,
+    games: pd.DataFrame,
+    thresholds: dict,
+) -> pd.Series:
+    """Flag moves played with low remaining time (spec section 4,
+    "time_pressure — definition", revised 2026-11-14).
+
+    Rule: clock_after < time_pressure_pct * base_seconds, applied to the
+    mover's own clock (me and opponent alike), same threshold for both.
+    Must be False when clock_after is missing, when base_seconds is missing,
+    and when base_seconds <= 0 (those games are excluded from the analyses,
+    but the column must still never read True for them).
+    """
+    base_seconds = moves["game_id"].map(
+        games.set_index("game_id")["base_seconds"]
+    )
+
+    valid_clock = moves["clock_after"].notna()
+    valid_base = base_seconds.notna() & base_seconds.gt(0)
+
+    return (
+        valid_clock
+        & valid_base
+        & (
+            moves["clock_after"]
+            < thresholds["time_pressure_pct"] * base_seconds
+        )
+    )
 
 def add_long_think(moves: pd.DataFrame, thresholds: dict) -> pd.Series:
     """Flag moves taking more than factor x the player's median think time.

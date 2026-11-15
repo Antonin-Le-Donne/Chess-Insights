@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from src.metrics import eco_to_family
-from src.scope import filter_current_regime
+from src.scope import exclude_non_proportional_clock_games, filter_current_regime
 
 
 def add_target(moves: pd.DataFrame) -> pd.Series:
@@ -393,9 +393,9 @@ def assemble_features(
     game_context = games[
         [
             "game_id",
-            "my_rating",  # those column are context for the game, not features, for chess.com it's the rating after the game
-            "opp_rating", # those column are context for the game, not features, for chess.com it's the rating after the game
-            "perf_type",  
+            "my_rating",  # those columns are context for the game, not features, for chess.com it's the rating after the game
+            "opp_rating",  # those columns are context for the game, not features, for chess.com it's the rating after the game
+            "perf_type",
             "eco",
             "date_utc",
             "base_seconds",
@@ -413,9 +413,16 @@ def assemble_features(
         eco_to_family
     )
 
+    valid_clock = dataset["clock_before_move"].notna()
+    valid_base = (
+        dataset["base_seconds"].notna()
+        & dataset["base_seconds"].gt(0)
+    )
+
     dataset["time_pressure_before_move"] = (
-        (dataset["base_seconds"] == 0)
-        | (
+        valid_clock
+        & valid_base
+        & (
             dataset["clock_before_move"]
             < time_pressure_pct * dataset["base_seconds"]
         )
@@ -595,7 +602,8 @@ class ModelSplits:
 
 def load_model_splits(config: dict) -> ModelSplits:
     """Single source of truth for the V2 data: parquet -> current-regime
-    filter -> assemble_features -> temporal split -> prepare_xy.
+    filter -> non-proportional clock exclusion -> assemble_features ->
+    temporal split -> prepare_xy.
 
     Replaces the block copied in train.py, evaluate_model.py and ablation.py
     (tech debt, PROJECT_TRACKER 2026-10-10): three copies could silently
@@ -618,6 +626,13 @@ def load_model_splits(config: dict) -> ModelSplits:
         games,
         moves,
         config["current_regime"],
+    )
+
+    # Apply the shared M4/V2 exclusion after the current-regime filter,
+    # so both analyses use the same definition of eligible games.
+    games_current, moves_current = exclude_non_proportional_clock_games(
+        games_current,
+        moves_current,
     )
 
     dataset = assemble_features(

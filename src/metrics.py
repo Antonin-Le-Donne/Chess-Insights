@@ -16,6 +16,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.scope import (
+    exclude_non_proportional_clock_games,
+    m1_peak_by_move,
+)
+
 ECO_FAMILY_MAP = [
     ("A80", "A99", "Dutch"),
     ("B20", "B99", "Sicilian"),
@@ -182,6 +187,7 @@ def bootstrap_games_ci(
     if not 0 < ci < 1:
         raise ValueError("ci must be strictly between 0 and 1.")
 
+
     unique_ids = pd.Series(game_ids).dropna().unique()
     if len(unique_ids) == 0:
         return np.nan, np.nan
@@ -222,11 +228,6 @@ def m2_side_moves(
     """
     if side not in {"me", "opponent"}:
         raise ValueError("side must be either 'me' or 'opponent'.")
-
-    if "long_think" not in moves.columns:
-        raise KeyError(
-            "Missing 'long_think' column. Run src.features before M2 analysis."
-        )
 
     if side == "me":
         result = moves.loc[moves["is_my_move"].fillna(False)].copy()
@@ -709,6 +710,690 @@ def m4_clock_burn_map(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
 
     return grouped
 
+# M4 time-pressure onset (spec section 5, "M4 — Time-pressure onset",
+# added 2026-11-14). Values fixed by the spec BEFORE computing anything.
+M4_CIF_MOVES = {"main": [20, 30, 40, 60], "bullet": [10, 15, 20, 30]}
+M4_PEAK_MIN_PLIES = 40
+M4_PEAK_MIN_MOVES_PER_BUCKET = 100
+M4_MIN_CROSSING_GAMES_FOR_MEDIAN_CI = 30
+M4_MIN_GAMES_PER_CADENCE = 100
+M4_SENSITIVITY_PCT = [0.20]
+M4_SENSITIVITY_SECONDS = [10, 20, 30]
+
+
+def m4_onset_by_game(
+    moves: pd.DataFrame,
+    games: pd.DataFrame,
+    time_pressure_pct: float | None = None,
+    absolute_seconds: float | None = None,
+) -> pd.DataFrame:
+    """One row per (game_id, side) for eligible games: when, if ever, that
+    player's clock_after first goes below the threshold.
+
+    Exactly one of time_pressure_pct (primary: config's 0.10; sensitivity:
+    0.20) or absolute_seconds (sensitivity: 10 / 20 / 30) must be given.
+
+    Eligibility is centralized in scope.exclude_non_proportional_clock_games:
+    base_seconds must be positive and both sides must have at least one
+    clock_after observation. An ineligible game is removed for both sides.
+    """
+    if (time_pressure_pct is None) == (absolute_seconds is None):
+        raise ValueError(
+            "Provide exactly one of time_pressure_pct or absolute_seconds."
+        )
+
+    if time_pressure_pct is not None:
+        threshold_value = float(time_pressure_pct)
+        if not 0 < threshold_value <= 1:
+            raise ValueError(
+                "time_pressure_pct must be in the interval (0, 1]."
+            )
+    elif absolute_seconds is not None:
+        threshold_value = float(absolute_seconds)
+        if threshold_value <= 0:
+            raise ValueError("absolute_seconds must be positive.")
+    else:
+        raise ValueError(
+            "Provide exactly one of time_pressure_pct or absolute_seconds."
+        )
+
+    has_percentage = time_pressure_pct is not None
+
+    output_columns = [
+        "game_id",
+        "side",
+        "perf_group",
+        "cadence",
+        "has_increment",
+        "crossed",
+        "onset_move",
+        "last_move_number",
+    ]
+
+    if games.empty or moves.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    eligible, moves_work = exclude_non_proportional_clock_games(
+        games,
+        moves,
+        require_paired_clock=True,
+    )
+
+    if eligible.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    eligible = eligible[
+        ["game_id", "base_seconds", "increment_seconds", "perf_type"]
+    ].copy()
+    eligible["perf_group"] = eligible["perf_type"].where(
+        eligible["perf_type"].eq("bullet"), "main"
+    )
+    eligible["has_increment"] = eligible["increment_seconds"].gt(0)
+    eligible["cadence"] = eligible.apply(
+        lambda row: f"{row['base_seconds'] / 60:g}+{row['increment_seconds']:g}",
+        axis=1,
+    )
+
+    moves_work = moves_work.loc[
+        moves_work["is_my_move"].isin([True, False])
+        & moves_work["move_number"].notna()
+    ].copy()
+
+    last_move_by_game = moves_work.groupby("game_id")["move_number"].max()
+    eligible["last_move_number"] = eligible["game_id"].map(last_move_by_game)
+    eligible = eligible.loc[eligible["last_move_number"].notna()].copy()
+
+    if eligible.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    moves_work = moves_work.loc[
+        moves_work["game_id"].isin(eligible["game_id"])
+        & moves_work["clock_after"].notna()
+        & moves_work["move_number"].notna()
+    ].copy()
+
+    base_by_game = eligible.set_index("game_id")["base_seconds"]
+    results = []
+
+    for side, is_my_move in (("me", True), ("opponent", False)):
+        side_moves = moves_work.loc[
+            moves_work["is_my_move"].eq(is_my_move)
+        ].copy()
+
+        if has_percentage:
+            threshold_by_game = base_by_game * threshold_value
+            crossing_mask = side_moves["clock_after"].lt(
+                side_moves["game_id"].map(threshold_by_game)
+            )
+        else:
+            crossing_mask = side_moves["clock_after"].lt(threshold_value)
+
+        crossing_rows = side_moves.loc[crossing_mask].sort_values(
+            ["game_id", "ply"] if "ply" in side_moves.columns
+            else ["game_id", "move_number"],
+            kind="stable",
+        )
+        onset_by_game = crossing_rows.groupby("game_id", sort=False)[
+            "move_number"
+        ].first()
+
+        side_result = eligible[
+            [
+                "game_id",
+                "perf_group",
+                "cadence",
+                "has_increment",
+                "last_move_number",
+            ]
+        ].copy()
+        side_result["side"] = side
+        side_result["onset_move"] = side_result["game_id"].map(onset_by_game)
+        side_result["crossed"] = side_result["onset_move"].notna()
+        results.append(side_result[output_columns])
+
+    return pd.concat(results, ignore_index=True)[output_columns]
+
+
+def m4_onset_control(
+    onset: pd.DataFrame,
+    group_column: str = "perf_group",
+    n_bootstrap: int = 1000,
+    ci: float = 0.95,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Me vs opponent on m4_onset_by_game's output, one row per (group, side).
+
+    Confirmatory (spec): with group_column="perf_group" and the primary
+    10% threshold, proportion_me - proportion_opponent of games crossing
+    the threshold, paired game-level bootstrap CI. Everything else is
+    exploratory: group_column="cadence" (cadences with fewer than
+    M4_MIN_GAMES_PER_CADENCE eligible games are not reported), the
+    increment split, the sensitivity thresholds.
+
+    Also per side: crossing proportion + CI and conditional median onset_move
+    among crossing games. Median confidence intervals and the paired median-
+    difference CI are reported only when EACH side has at least
+    M4_MIN_CROSSING_GAMES_FOR_MEDIAN_CI crossing games in the group. Median
+    point estimates remain available when at least one side has crossings.
+
+    Reuse bootstrap_games_ci with one pre-computed value per game (the M2/M3
+    lesson: never resample move rows inside the bootstrap).
+    """
+    if group_column == "side":
+        raise ValueError("group_column cannot be 'side'.")
+    if onset.duplicated(["game_id", "side"]).any():
+        raise ValueError("onset must contain one row per (game_id, side).")
+    unexpected_sides = set(onset["side"].dropna().unique()) - {"me", "opponent"}
+    if unexpected_sides:
+        raise ValueError(
+            "onset['side'] contains unexpected values: "
+            f"{sorted(unexpected_sides)}"
+        )
+
+    output_columns = [
+        group_column,
+        "side",
+        "n_games",
+        "n_crossed",
+        "proportion",
+        "ci_lower",
+        "ci_upper",
+        "median_onset_move",
+        "median_ci_lower",
+        "median_ci_upper",
+        "proportion_difference_me_minus_opponent",
+        "difference_ci_lower",
+        "difference_ci_upper",
+        "median_difference_me_minus_opponent",
+        "median_difference_ci_lower",
+        "median_difference_ci_upper",
+    ]
+    if onset.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    work = onset.copy()
+    work["crossed"] = work["crossed"].fillna(False).astype(bool)
+    if not work["crossed"].eq(work["onset_move"].notna()).all():
+        raise ValueError("crossed must be True exactly when onset_move is present.")
+
+    results = []
+    for group_value, group in work.groupby(
+        group_column, sort=False, dropna=False
+    ):
+        me = group.loc[group["side"].eq("me")].set_index("game_id")
+        opponent = group.loc[group["side"].eq("opponent")].set_index("game_id")
+        if set(me.index) != set(opponent.index):
+            raise ValueError(
+                f"Group {group_value!r} does not contain paired rows for both sides."
+            )
+
+        game_ids = me.index
+        opponent = opponent.reindex(game_ids)
+        n_games = len(game_ids)
+        if group_column == "cadence" and n_games < M4_MIN_GAMES_PER_CADENCE:
+            continue
+
+        crossed_by_side = {
+            "me": me["crossed"].astype(float),
+            "opponent": opponent["crossed"].astype(float),
+        }
+        onset_by_side = {
+            "me": me["onset_move"],
+            "opponent": opponent["onset_move"],
+        }
+        estimates = {}
+
+        for side in ("me", "opponent"):
+            crossed = crossed_by_side[side]
+            n_crossed = int(crossed.sum())
+            proportion = float(crossed.mean()) if n_games else np.nan
+            onset_values = onset_by_side[side].dropna()
+            median_onset = (
+                float(onset_values.median())
+                if not onset_values.empty
+                else np.nan
+            )
+
+            def proportion_statistic(sampled_ids, values=crossed):
+                sampled = _resample_indexed_rows(values, sampled_ids)
+                return float(sampled.mean()) if not sampled.empty else np.nan
+
+            ci_lower, ci_upper = bootstrap_games_ci(
+                pd.Series(game_ids),
+                proportion_statistic,
+                n_bootstrap=n_bootstrap,
+                ci=ci,
+                random_state=random_state,
+            )
+
+            estimates[side] = {
+                "n_games": n_games,
+                "n_crossed": n_crossed,
+                "proportion": proportion,
+                "ci_lower": ci_lower,
+                "ci_upper": ci_upper,
+                "median_onset_move": median_onset,
+                "median_ci_lower": np.nan,
+                "median_ci_upper": np.nan,
+            }
+
+        # Median confidence intervals require at least 30 crossing games
+        # on EACH side. Point estimates remain visible below that threshold.
+        enough_crossings = all(
+            estimates[side]["n_crossed"] >= M4_MIN_CROSSING_GAMES_FOR_MEDIAN_CI
+            for side in ("me", "opponent")
+        )
+        if enough_crossings:
+            for side in ("me", "opponent"):
+                def median_statistic(sampled_ids, values=onset_by_side[side]):
+                    sampled = _resample_indexed_rows(values, sampled_ids).dropna()
+                    return float(sampled.median()) if not sampled.empty else np.nan
+
+                median_ci_lower, median_ci_upper = bootstrap_games_ci(
+                    pd.Series(game_ids),
+                    median_statistic,
+                    n_bootstrap=n_bootstrap,
+                    ci=ci,
+                    random_state=random_state,
+                )
+                estimates[side]["median_ci_lower"] = median_ci_lower
+                estimates[side]["median_ci_upper"] = median_ci_upper
+
+        if (
+            pd.notna(estimates["me"]["median_onset_move"])
+            and pd.notna(estimates["opponent"]["median_onset_move"])
+        ):
+            median_difference = (
+                estimates["me"]["median_onset_move"]
+                - estimates["opponent"]["median_onset_move"]
+            )
+        else:
+            median_difference = np.nan
+
+        if enough_crossings:
+            def median_difference_statistic(sampled_ids):
+                sampled_me = _resample_indexed_rows(
+                    onset_by_side["me"], sampled_ids
+                ).dropna()
+                sampled_opponent = _resample_indexed_rows(
+                    onset_by_side["opponent"], sampled_ids
+                ).dropna()
+                if sampled_me.empty or sampled_opponent.empty:
+                    return np.nan
+                return float(sampled_me.median() - sampled_opponent.median())
+
+            median_difference_ci_lower, median_difference_ci_upper = (
+                bootstrap_games_ci(
+                    pd.Series(game_ids),
+                    median_difference_statistic,
+                    n_bootstrap=n_bootstrap,
+                    ci=ci,
+                    random_state=random_state,
+                )
+            )
+        else:
+            median_difference_ci_lower = np.nan
+            median_difference_ci_upper = np.nan
+
+        def proportion_difference_statistic(sampled_ids):
+            sampled_me = _resample_indexed_rows(
+                crossed_by_side["me"], sampled_ids
+            )
+            sampled_opponent = _resample_indexed_rows(
+                crossed_by_side["opponent"], sampled_ids
+            )
+            return float(sampled_me.mean() - sampled_opponent.mean())
+
+        proportion_difference = (
+            estimates["me"]["proportion"] - estimates["opponent"]["proportion"]
+        )
+        difference_ci_lower, difference_ci_upper = bootstrap_games_ci(
+            pd.Series(game_ids),
+            proportion_difference_statistic,
+            n_bootstrap=n_bootstrap,
+            ci=ci,
+            random_state=random_state,
+        )
+
+        for side in ("me", "opponent"):
+            results.append({
+                group_column: group_value,
+                "side": side,
+                **estimates[side],
+                "proportion_difference_me_minus_opponent": proportion_difference,
+                "difference_ci_lower": difference_ci_lower,
+                "difference_ci_upper": difference_ci_upper,
+                "median_difference_me_minus_opponent": median_difference,
+                "median_difference_ci_lower": median_difference_ci_lower,
+                "median_difference_ci_upper": median_difference_ci_upper,
+            })
+
+    return pd.DataFrame(results, columns=output_columns)
+
+
+def m4_onset_cif(
+    onset: pd.DataFrame,
+    cif_moves: dict[str, list[int]] = M4_CIF_MOVES,
+    n_bootstrap: int = 1000,
+    ci: float = 0.95,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Exploratory cumulative incidence of crossing at fixed move numbers.
+
+    Games ending before crossing remain in the denominator as competing
+    events. Since every eligible game is observed through termination, the
+    CIF at the latest game-ending move must equal the crude crossing
+    proportion. The final equality is retained as a denominator invariant.
+    """
+    output_columns = [
+        "perf_group",
+        "side",
+        "move_number",
+        "cif",
+        "ci_lower",
+        "ci_upper",
+        "cif_difference_me_minus_opponent",
+        "difference_ci_lower",
+        "difference_ci_upper",
+    ]
+
+    if onset.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    if onset.duplicated(["game_id", "side"]).any():
+        raise ValueError("onset must contain one row per (game_id, side).")
+
+    unexpected_sides = set(onset["side"].dropna().unique()) - {
+        "me", "opponent"
+    }
+    if unexpected_sides:
+        raise ValueError(
+            "onset['side'] contains unexpected values: "
+            f"{sorted(unexpected_sides)}"
+        )
+
+    work = onset.copy()
+    work["crossed"] = work["crossed"].fillna(False).astype(bool)
+
+    if not work["crossed"].eq(work["onset_move"].notna()).all():
+        raise ValueError(
+            "crossed must be True exactly when onset_move is present."
+        )
+
+    if work["last_move_number"].isna().any():
+        raise ValueError(
+            "last_move_number must be present for every eligible game."
+        )
+
+    if (
+        work["crossed"]
+        & work["onset_move"].gt(work["last_move_number"])
+    ).any():
+        raise ValueError(
+            "A crossing onset cannot occur after the game's last move."
+        )
+
+    results = []
+
+    for perf_group, group in work.groupby("perf_group", sort=False):
+        perf_group_key = str(perf_group)
+        fixed_moves = sorted(set(cif_moves[perf_group_key]))
+
+        me = group.loc[group["side"].eq("me")].set_index("game_id")
+        opponent = group.loc[
+            group["side"].eq("opponent")
+        ].set_index("game_id")
+
+        if set(me.index) != set(opponent.index):
+            raise ValueError(
+                f"perf_group {perf_group_key!r} does not contain "
+                "paired rows for both sides."
+            )
+
+        game_ids = me.index
+        opponent = opponent.reindex(game_ids)
+
+        crossed_by_side = {
+            "me": me["crossed"].astype(bool),
+            "opponent": opponent["crossed"].astype(bool),
+        }
+        onset_by_side = {
+            "me": me["onset_move"],
+            "opponent": opponent["onset_move"],
+        }
+
+        for move_number in fixed_moves:
+            event_by_side = {
+                side: (
+                    crossed_by_side[side]
+                    & onset_by_side[side].le(move_number)
+                ).astype(float)
+                for side in ("me", "opponent")
+            }
+            estimates = {}
+
+            for side in ("me", "opponent"):
+                event = event_by_side[side]
+
+                def cif_statistic(sampled_ids, values=event):
+                    sampled = _resample_indexed_rows(values, sampled_ids)
+                    return (
+                        float(sampled.mean())
+                        if not sampled.empty
+                        else np.nan
+                    )
+
+                ci_lower, ci_upper = bootstrap_games_ci(
+                    pd.Series(game_ids),
+                    cif_statistic,
+                    n_bootstrap=n_bootstrap,
+                    ci=ci,
+                    random_state=random_state,
+                )
+                estimates[side] = {
+                    "cif": float(event.mean()),
+                    "ci_lower": ci_lower,
+                    "ci_upper": ci_upper,
+                }
+
+            def cif_difference_statistic(sampled_ids):
+                sampled_me = _resample_indexed_rows(
+                    event_by_side["me"], sampled_ids
+                )
+                sampled_opponent = _resample_indexed_rows(
+                    event_by_side["opponent"], sampled_ids
+                )
+                return float(sampled_me.mean() - sampled_opponent.mean())
+
+            cif_difference = (
+                estimates["me"]["cif"] - estimates["opponent"]["cif"]
+            )
+            difference_ci_lower, difference_ci_upper = bootstrap_games_ci(
+                pd.Series(game_ids),
+                cif_difference_statistic,
+                n_bootstrap=n_bootstrap,
+                ci=ci,
+                random_state=random_state,
+            )
+
+            for side in ("me", "opponent"):
+                results.append({
+                    "perf_group": perf_group_key,
+                    "side": side,
+                    "move_number": move_number,
+                    **estimates[side],
+                    "cif_difference_me_minus_opponent": cif_difference,
+                    "difference_ci_lower": difference_ci_lower,
+                    "difference_ci_upper": difference_ci_upper,
+                })
+
+        # Every game has either crossed or ended by the latest end move.
+        last_move_in_group = group["last_move_number"].max()
+        for side in ("me", "opponent"):
+            cif_at_end = float(
+                (
+                    crossed_by_side[side]
+                    & onset_by_side[side].le(last_move_in_group)
+                ).mean()
+            )
+            crossing_proportion = float(crossed_by_side[side].mean())
+            if not np.isclose(cif_at_end, crossing_proportion, atol=1e-12):
+                raise AssertionError(
+                    "M4 CIF at the last game-ending move does not match the "
+                    f"crossing proportion for {perf_group_key}/{side}."
+                )
+
+    return pd.DataFrame(results, columns=output_columns)
+
+
+def m4_reference_peak(
+    moves: pd.DataFrame,
+    games: pd.DataFrame,
+) -> dict[str, float]:
+    """End move of the M1 reference peak bucket, per perf_group (spec M4,
+    "Reference M1 peak", revised 2026-11-15). NaN when the peak is undefined.
+
+    Curve: my blunder rate per M1 bucket (floor(move_number / 5) * 5),
+    pooled over the duration tiers (scope.m1_peak_by_move), on games with
+    n_plies >= M4_PEAK_MIN_PLIES only. Eligible bucket: at least
+    M4_PEAK_MIN_MOVES_PER_BUCKET of my moves. Peak: the eligible bucket with
+    the highest rate; ties -> the LATEST tied bucket. Returned value: b + 4.
+
+    Computed from the data passed in -- never a constant, never reused
+    across players.
+    """
+    eligible_games = games.loc[
+        games["n_plies"].ge(M4_PEAK_MIN_PLIES),
+        ["game_id", "perf_type"],
+    ].copy()
+    result = {"main": np.nan, "bullet": np.nan}
+    if eligible_games.empty:
+        return result
+
+    eligible_game_ids = eligible_games["game_id"]
+    eligible_moves = moves.loc[
+        moves["game_id"].isin(eligible_game_ids)
+        & moves["is_my_move"].fillna(False).astype(bool)
+    ].copy()
+    if eligible_moves.empty:
+        return result
+
+    # Use the shared M1 implementation so the reference curve follows the
+    # same five-move buckets and blunder-rate definition as the dashboard.
+    peak_curve = m1_peak_by_move(
+        eligible_moves,
+        eligible_games,
+    ).reset_index()
+    if peak_curve.empty:
+        return result
+
+    eligible_moves["perf_group"] = eligible_moves["game_id"].map(
+        eligible_games.set_index("game_id")["perf_type"].where(
+            eligible_games.set_index("game_id")["perf_type"].eq("bullet"),
+            "main",
+        )
+    )
+    eligible_moves["move_bucket"] = (
+        eligible_moves["move_number"] // 5
+    ) * 5
+    move_counts = (
+        eligible_moves.groupby(["perf_group", "move_bucket"], sort=False)
+        .size()
+        .rename("n_my_moves")
+        .reset_index()
+    )
+    peak_curve = peak_curve.merge(
+        move_counts,
+        on=["perf_group", "move_bucket"],
+        how="left",
+        validate="one_to_one",
+    )
+    peak_curve["n_my_moves"] = peak_curve["n_my_moves"].fillna(0).astype(int)
+    peak_curve = peak_curve.loc[
+        peak_curve["n_my_moves"].ge(M4_PEAK_MIN_MOVES_PER_BUCKET)
+        & peak_curve["blunder_rate"].notna()
+    ]
+
+    for perf_group in ("main", "bullet"):
+        group_curve = peak_curve.loc[
+            peak_curve["perf_group"].eq(perf_group)
+        ]
+        if group_curve.empty:
+            continue
+
+        highest_rate = group_curve["blunder_rate"].max()
+        tied_peaks = group_curve.loc[
+            group_curve["blunder_rate"].eq(highest_rate)
+        ]
+        latest_peak_bucket = tied_peaks["move_bucket"].max()
+        result[perf_group] = float(latest_peak_bucket + 4)
+
+    return result
+
+
+def m4_blunders_under_time_pressure(
+    moves: pd.DataFrame,
+    games: pd.DataFrame,
+) -> pd.DataFrame:
+    """Descriptive share of blunders played under time pressure.
+
+    Uses the same M4-eligible games as m4_onset_by_game: positive base time
+    and at least one clock_after observation for each side.
+    """
+    output_columns = [
+        "perf_group", "side", "n_blunders", "n_under_time_pressure", "share"
+    ]
+    if games.empty or moves.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    eligible_games, eligible_moves = exclude_non_proportional_clock_games(
+        games,
+        moves,
+        require_paired_clock=True,
+    )
+
+    eligible_moves = eligible_moves.loc[
+        eligible_moves["move_quality"].notna()
+        & eligible_moves["is_my_move"].isin([True, False])
+    ].copy()
+    perf_type_by_game = eligible_games.set_index("game_id")["perf_type"]
+    perf_type = eligible_moves["game_id"].map(perf_type_by_game)
+    eligible_moves["perf_group"] = perf_type.where(
+        perf_type.eq("bullet"), "main"
+    )
+    eligible_moves["_is_blunder"] = eligible_moves["move_quality"].eq("blunder")
+    eligible_moves["_under_time_pressure"] = (
+        eligible_moves["time_pressure"].fillna(False).astype(bool)
+    )
+
+    results = []
+    for perf_group in ("main", "bullet"):
+        for side, is_my_move in (("me", True), ("opponent", False)):
+            side_moves = eligible_moves.loc[
+                eligible_moves["perf_group"].eq(perf_group)
+                & eligible_moves["is_my_move"].eq(is_my_move)
+            ]
+            blunders = side_moves.loc[side_moves["_is_blunder"]]
+            n_blunders = len(blunders)
+            n_under_time_pressure = int(
+                blunders["_under_time_pressure"].sum()
+            )
+            share = (
+                n_under_time_pressure / n_blunders
+                if n_blunders
+                else np.nan
+            )
+            results.append({
+                "perf_group": perf_group,
+                "side": side,
+                "n_blunders": n_blunders,
+                "n_under_time_pressure": n_under_time_pressure,
+                "share": share,
+            })
+
+    return pd.DataFrame(results, columns=output_columns)
+
+
 def m5_opening_surgery(moves: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """Group by opening family (from ECO code) + color: n_games, score %,
     mean MY win% at ply 20, blunder rate in first 20 plies (spec section 5, M5).
@@ -957,11 +1642,6 @@ def m6_swindle_profile(
 
     if cp_error_threshold <= 0:
         raise ValueError("cp_error_threshold must be positive.")
-
-    if "termination" not in games.columns:
-        raise KeyError(
-            "games must contain a 'termination' column for the M6 saved-game breakdown."
-        )
 
     # Keep bullet separate; blitz and rapid are combined into main.
     perf_type_by_game = games.set_index("game_id")["perf_type"]
@@ -1239,14 +1919,6 @@ def assign_sessions(
     Prints a session-length distribution as a sanity check for duration-unit
     mistakes that could otherwise merge hundreds of games into one session.
     """
-    required_game_columns = {"game_id", "date_utc", "result_for_me"}
-    missing_game_columns = required_game_columns - set(games.columns)
-    if missing_game_columns:
-        raise KeyError(
-            "games is missing required columns: "
-            f"{sorted(missing_game_columns)}"
-        )
-
     if not pd.notna(gap_minutes) or gap_minutes < 0:
         raise ValueError("gap_minutes must be a non-negative number.")
 
@@ -1265,12 +1937,6 @@ def assign_sessions(
         return pd.DataFrame(columns=output_columns)
 
     if not moves.empty:
-        missing_move_columns = {"game_id", "time_spent"} - set(moves.columns)
-        if missing_move_columns:
-            raise KeyError(
-                "moves is missing required columns: "
-                f"{sorted(missing_move_columns)}"
-            )
         unknown_game_ids = ~moves["game_id"].isin(games["game_id"])
         if unknown_game_ids.any():
             unknown_ids = moves.loc[unknown_game_ids, "game_id"].drop_duplicates()
@@ -1278,15 +1944,9 @@ def assign_sessions(
                 "moves contains game_id values absent from games: "
                 f"{unknown_ids.head(10).tolist()}"
             )
-        durations_seconds = (
-            moves.assign(
-                _time_spent_seconds=pd.to_numeric(
-                    moves["time_spent"], errors="raise"
-                )
-            )
-            .groupby("game_id", sort=False)["_time_spent_seconds"]
-            .sum()
-        )
+        durations_seconds = moves.groupby("game_id", sort=False)[
+            "time_spent"
+        ].sum()
     else:
         durations_seconds = pd.Series(dtype="float64")
 
@@ -1356,22 +2016,6 @@ def m7_time_and_session(
     or after a win, draw, or loss in the same session). Sessions span platforms
     and time controls because they track my playing sequence, not a single site.
     """
-    required_game_columns = {
-        "game_id", "date_utc", "result_for_me", "my_rating", "opp_rating"
-    }
-    required_move_columns = {"game_id", "is_my_move", "move_quality"}
-    missing_game_columns = required_game_columns - set(games.columns)
-    missing_move_columns = required_move_columns - set(moves.columns)
-    if missing_game_columns:
-        raise KeyError(
-            "games is missing required columns: "
-            f"{sorted(missing_game_columns)}"
-        )
-    if missing_move_columns:
-        raise KeyError(
-            "moves is missing required columns: "
-            f"{sorted(missing_move_columns)}"
-        )
     if max_game_index < 1:
         raise ValueError("max_game_index must be at least 1.")
 
@@ -1581,14 +2225,64 @@ if __name__ == "__main__":
     print("\n--- M4 clock burn map ---")
     m4 = m4_clock_burn_map(moves, games)
     print(m4)
-    main_group = m4.loc["main"]
-    onset = main_group.loc[main_group["median_clock_after"] < 36].index.min()
-    print("Time pressure onset (move number):", onset)
-    bullet_group = m4.loc["bullet"]
-    onset_bullet = bullet_group.loc[
-        bullet_group["median_clock_after"] < (0.10 * 60)
-    ].index.min()
-    print("Bullet — time pressure onset (move number):", onset_bullet)
+    config_path = Path(__file__).resolve().parents[1] / "config.toml"
+    with config_path.open("rb") as file:
+        config = tomllib.load(file)
+    time_pressure_pct = float(config["thresholds"]["time_pressure_pct"])
+
+    print("\n--- M4 time-pressure onset (primary threshold) ---")
+    primary_onset = m4_onset_by_game(
+        moves,
+        games,
+        time_pressure_pct=time_pressure_pct,
+    )
+    print("Eligible paired games:", primary_onset["game_id"].nunique())
+    print("\nM4 — Confirmatory comparison by perf_group")
+    print(m4_onset_control(primary_onset).to_string(index=False))
+    print("\nM4 — Exploratory comparison by cadence (minimum 100 games)")
+    print(
+        m4_onset_control(
+            primary_onset,
+            group_column="cadence",
+        ).to_string(index=False)
+    )
+    print("\nM4 — Exploratory comparison by increment status")
+    print(
+        m4_onset_control(
+            primary_onset,
+            group_column="has_increment",
+        ).to_string(index=False)
+    )
+    print("\nM4 — Exploratory cumulative incidence")
+    print(m4_onset_cif(primary_onset).to_string(index=False))
+    print("\nM4 — Dynamic M1 reference peak (end of peak bucket)")
+    print(pd.Series(m4_reference_peak(moves, games), name="reference_peak_move"))
+    print("\nM4 — Descriptive share of blunders under time pressure")
+    print(m4_blunders_under_time_pressure(moves, games).to_string(index=False))
+
+    for sensitivity_pct in M4_SENSITIVITY_PCT:
+        print(
+            f"\n--- M4 sensitivity: {sensitivity_pct:.0%} of base_seconds ---"
+        )
+        sensitivity_onset = m4_onset_by_game(
+            moves,
+            games,
+            time_pressure_pct=sensitivity_pct,
+        )
+        print(m4_onset_control(sensitivity_onset).to_string(index=False))
+        print(m4_onset_cif(sensitivity_onset).to_string(index=False))
+
+    for sensitivity_seconds in M4_SENSITIVITY_SECONDS:
+        print(
+            f"\n--- M4 sensitivity: {sensitivity_seconds:g} seconds ---"
+        )
+        sensitivity_onset = m4_onset_by_game(
+            moves,
+            games,
+            absolute_seconds=sensitivity_seconds,
+        )
+        print(m4_onset_control(sensitivity_onset).to_string(index=False))
+        print(m4_onset_cif(sensitivity_onset).to_string(index=False))
 
     print("\n--- M5 opening surgery ---")
     print(m5_opening_surgery(moves, games))

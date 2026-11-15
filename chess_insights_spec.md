@@ -425,6 +425,8 @@ This comparison is exploratory and does not establish causality. The estimated p
 
 The proportion of blunders played under the time-pressure threshold is reported descriptively, separately for `me` and `opponent`. It is not used as a confirmatory test and does not establish causality.
 
+Blunders under time pressure are identified using the clock remaining after the move (`clock_after`): a move is considered under time pressure when the player's clock after that move is below the configured threshold (`time_pressure_pct × base_seconds`). Missing clock observations are not classified as time pressure. This flag also includes blunders for which the time spent thinking about the move itself caused the clock to fall below the threshold; therefore, the proportion of blunders played under time pressure is descriptive and must not be interpreted as a measure of the causal effect of time pressure on blunders.
+
 All comparisons are descriptive or associational; they do not establish that low remaining time causes blunders.
 
 ### M5 — Opening surgery table (hypothesis: Sicilian mismatch)
