@@ -1,6 +1,6 @@
 # Chess Insights
 
-I analyse my own online chess games (about 12,000 of them) to find out **when, where
+I analyse my own online chess games (about 11,600 of them) to find out **when, where
 and why I make big mistakes**. For each pattern, I also check whether the mistake
 is really mine or just what happens to every player at my level.
 
@@ -153,7 +153,9 @@ games** (10,270 moves), which it never saw during training.
 
 **Working, not complete.** The pipeline, the dashboard (seven metrics, filters,
 links to games, per-game risk timeline) and the V2 model work. Games are imported up to 2026-11-14
-(12,042 games); the numbers above still come from the 2026-10-16 snapshot.
+(11,626 rated standard games, after removing 416 unrated or variant chess.com
+games that had slipped through); the numbers above still come from the
+2026-10-16 snapshot.
 
 Next steps:
 
