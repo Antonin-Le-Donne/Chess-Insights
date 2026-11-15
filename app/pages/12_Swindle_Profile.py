@@ -1,3 +1,8 @@
+"""M6 — Swindle profile (spec section 5, M6), laid out with the dashboard
+principles (spec section 6): the answer first, one main chart, details in
+expanders.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -8,30 +13,50 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
+from app.controls import GROUP_LABELS
 from app.filters import sidebar_filtered
 from app.ui import load_ui
 from src.metrics import m6_swindle_profile
 
+ME_COLOR = "#C7F36B"
+OPPONENT_COLOR = "#8F9893"
+BLUE = "#7CC4FF"
+
+PLOT_LAYOUT = dict(
+    template="plotly_dark",
+    font=dict(family="Inter", size=14),
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+)
+
+TERMINATION_LABELS = {
+    "time": "On time",
+    "checkmate": "Checkmate",
+    "resignation": "Resignation",
+    "stalemate": "Stalemate",
+    "repetition": "Repetition",
+    "insufficient_material": "Insufficient material",
+    "agreement": "Agreement",
+    "abandoned": "Abandoned",
+    "normal_lichess": "Normal (Lichess; reason hidden)",
+    "other": "Other / unrecognized",
+}
+
 
 @st.cache_data
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    games = pd.read_parquet(
-        ROOT / "data" / "processed" / "games.parquet"
-    )
-    moves = pd.read_parquet(
-        ROOT / "data" / "processed" / "moves.parquet"
-    )
+    games = pd.read_parquet(ROOT / "data" / "processed" / "games.parquet")
+    moves = pd.read_parquet(ROOT / "data" / "processed" / "moves.parquet")
     return games, moves
 
 
 def load_thresholds() -> tuple[int, int, int, int]:
     """Read all M6 thresholds from config.toml."""
     with (ROOT / "config.toml").open("rb") as file:
-        config = tomllib.load(file)
-
-    thresholds = config["thresholds"]
+        thresholds = tomllib.load(file)["thresholds"]
     return (
         int(thresholds["lost_pct"]),
         int(thresholds["min_plies"]),
@@ -40,61 +65,150 @@ def load_thresholds() -> tuple[int, int, int, int]:
     )
 
 
-def format_percent(value: float | int | None) -> str:
-    """Format a proportion as a percentage, handling missing values."""
-    if value is None or pd.isna(value):
-        return "—"
-    return f"{float(value):.1%}"
+def pct(value: float | None) -> str:
+    return "—" if value is None or pd.isna(value) else f"{float(value):.1%}"
 
 
-def format_gap(value: float | int | None) -> str | None:
-    """Format a score difference as percentage points."""
-    if value is None or pd.isna(value):
-        return None
-    return f"{float(value) * 100:+.1f} pp vs expected"
-
-
-st.set_page_config(
-    page_title="Chess Insights",
-    layout="wide",
-)
-
+st.set_page_config(page_title="Chess Insights", layout="wide")
 load_ui()
 
 
-def main() -> None:
-    st.title("M6 — Swindle profile")
+def share_saved_on_time(terminations: pd.DataFrame) -> float:
+    """Share of all my saved games (win or draw) that ended on the clock."""
+    total = terminations["n_saved"].sum()
+    on_time = terminations.loc[terminations["termination_category"].eq("time"), "n_saved"].sum()
+    return on_time / total if total else float("nan")
 
+
+def render_answer(mine: pd.Series, theirs: pd.Series | None, on_time: float, group_label: str) -> None:
     st.markdown(
-        """
-        **Question:** when I reach a lost position, how often do I still save
-        the game, and how often does my opponent offer a realistic chance to
-        recover?
-
-        This page identifies games where my win probability remains low for
-        several consecutive plies. It compares my actual score with the
-        expected-score proxy at the start of that stretch, then measures how
-        often an opponent move substantially improves my winning chances.
-        """
+        f"<span style='color:{BLUE};font-size:0.8rem;font-weight:600;letter-spacing:0.04em;"
+        "text-transform:uppercase'>● Compared with my opponents · no interval yet</span>",
+        unsafe_allow_html=True,
     )
+    sentence = (
+        f"#### In {group_label.lower()}, from a lost position ({int(mine['n']):,} games), I score "
+        f"**{mine['score_pct']:.0%}** where the engine expects **{mine['expected_score']:.0%}**: "
+        f"**{100 * mine['score_vs_expected']:+.0f} points**."
+    )
+    if theirs is not None:
+        sentence += (
+            f" My opponents, in their own lost positions, beat the same expectation by only "
+            f"**{100 * theirs['score_vs_expected']:+.0f} points**."
+        )
+    if pd.notna(on_time):
+        sentence += f" About **{on_time:.0%}** of my saves end on the clock."
+    st.markdown(sentence)
 
-    (
-        lost_pct,
-        min_plies,
-        cp_error_threshold,
-        swing_to_pct,
-    ) = load_thresholds()
 
+def render_main_chart(mine: pd.Series, theirs: pd.Series | None) -> None:
+    """Main chart: score above the engine's expectation, me vs my opponents."""
+    rows = [("Me", mine, ME_COLOR)]
+    if theirs is not None:
+        rows.append(("My opponents", theirs, OPPONENT_COLOR))
+    fig = go.Figure(
+        go.Bar(
+            x=[label for label, _, _ in rows],
+            y=[100 * row["score_vs_expected"] for _, row, _ in rows],
+            marker_color=[color for _, _, color in rows],
+            text=[f"{100 * row['score_vs_expected']:+.1f} pts" for _, row, _ in rows],
+            textposition="outside",
+            customdata=[
+                [pct(row["score_pct"] if "score_pct" in row else row["actual_score"]),
+                 pct(row["expected_score"]), int(row["n"])]
+                for _, row, _ in rows
+            ],
+            hovertemplate=(
+                "%{x}: scored %{customdata[0]} vs %{customdata[1]} expected "
+                "(%{customdata[2]:,} lost games)<extra></extra>"
+            ),
+            width=0.5,
+        )
+    )
+    fig.add_hline(y=0, line_color="#8F9893", line_width=1)
+    fig.update_layout(
+        **PLOT_LAYOUT,
+        height=320,
+        margin=dict(l=10, r=10, t=30, b=10),
+        yaxis=dict(title="Points scored above the expectation",
+                   gridcolor="rgba(255,255,255,0.07)", rangemode="tozero"),
+        showlegend=False,
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     st.caption(
-        f"A lost stretch requires the selected side's win probability to stay "
-        f"at or below {lost_pct}% for {min_plies} consecutive plies. "
-        f"A large CP error is at least {cp_error_threshold} cp. A rescue "
-        f"opportunity requires my win probability to rise from at most "
-        f"{lost_pct}% to at least {swing_to_pct}% after an opponent move."
+        "Expectation = the average engine win probability at the moment the game became "
+        "lost. The formula is calibrated on Lichess players overall, so part of any gap can "
+        "come from calibration — which is why the same rule applied to my opponents is the "
+        "reference, not 0."
     )
 
-    games, moves = sidebar_filtered(*load_data())
 
+def render_chances(opportunities: pd.DataFrame, terminations: pd.DataFrame) -> None:
+    if opportunities.empty or int(opportunities["n_lost_games"].max()) == 0:
+        st.info("No qualifying lost games for this time control.")
+        return
+    chance = opportunities.loc[opportunities["opponent_gave_chance"]].iloc[0]
+    no_chance = opportunities.loc[~opportunities["opponent_gave_chance"]].iloc[0]
+    no_chance_on_time = share_saved_on_time(
+        terminations.loc[~terminations["opponent_gave_chance"]]
+    )
+    st.markdown(
+        f"- My opponent gave me a real chance in **{pct(chance['share_of_lost_games'])}** of my "
+        f"lost games ({int(chance['n_games']):,} of {int(chance['n_lost_games']):,}).\n"
+        f"- With that chance, I saved the game (win or draw) **{pct(chance['saved_rate'])}** of "
+        "the time.\n"
+        f"- Without one, I still saved **{pct(no_chance['saved_rate'])}** "
+        f"({int(no_chance['n_saved']):,} games), {pct(no_chance_on_time)} of them on the clock."
+    )
+
+
+def render_terminations(terminations: pd.DataFrame) -> None:
+    if terminations.empty:
+        st.info("No saved games for this time control.")
+        return
+    table = terminations.assign(
+        **{
+            "Chance offered": terminations["opponent_gave_chance"].map({True: "Yes", False: "No"}),
+            "How it ended": terminations["termination_category"].map(TERMINATION_LABELS),
+            "Share of saved games": terminations["share_of_saved_games"].map(pct),
+        }
+    ).rename(columns={"n_saved": "Saved games"})
+    st.dataframe(
+        table.sort_values(["Chance offered", "Saved games"], ascending=[True, False])[
+            ["Chance offered", "How it ended", "Saved games", "Share of saved games"]
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    st.caption(
+        "Shares are within each chance-offered group. Lichess 'Normal' hides whether the "
+        "game ended by mate, resignation or draw, so it is kept as its own category."
+    )
+
+
+def render_opponent_errors(opponent_moves: pd.DataFrame, cp_error_threshold: int) -> None:
+    rates = opponent_moves.set_index("state")
+    lines = []
+    for state, label in (("lost", "when I am lost"), ("winning", "when I am winning")):
+        if state in rates.index:
+            row = rates.loc[state]
+            lines.append(
+                f"- Opponent moves losing {cp_error_threshold}+ centipawns {label}: "
+                f"**{pct(row['cp_error_rate'])}** ({int(row['n']):,} moves)"
+            )
+    st.markdown("\n".join(lines))
+    st.caption(
+        "Secondary evidence: in an already-decided position, a large centipawn loss can "
+        "change nothing (e.g. −900 to −650), so part of the gap is the measurement itself."
+    )
+
+
+def main() -> None:
+    st.title("M6 — Saving lost positions")
+    st.markdown("**Question:** when I am lost, do I save more games than players at my level would — and how?")
+
+    lost_pct, min_plies, cp_error_threshold, swing_to_pct = load_thresholds()
+    games, moves = sidebar_filtered(*load_data())
     profile = m6_swindle_profile(
         moves,
         games,
@@ -104,347 +218,55 @@ def main() -> None:
         swing_to_pct=swing_to_pct,
     )
 
-    perf_group_label = st.selectbox(
+    group = st.radio(
         "Time control",
-        ["Blitz / rapid (main)", "Bullet"],
-        key="m6_time_control",
-    )
-    perf_group_choice = (
-        "bullet" if perf_group_label == "Bullet" else "main"
-    )
-
-    # Results for games where I reached a qualifying lost stretch.
-    st.markdown("### Results after a lost stretch")
-
-    results = profile["results"]
-    selected_results = results.loc[
-        results["perf_group"] == perf_group_choice
-    ]
-
-    if selected_results.empty or int(selected_results.iloc[0]["n"]) == 0:
-        st.info(
-            "No games reached a qualifying lost stretch for this time control."
-        )
-    else:
-        result = selected_results.iloc[0]
-        n_games = int(result["n"])
-        wins = int(result["wins"])
-        draws = int(result["draws"])
-        losses = int(result["losses"])
-
-        # Shares go in the value, not in `delta`: st.metric draws a delta as a
-        # green "improvement" arrow, which misreads a 72% loss share.
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Lost games", f"{n_games:,}")
-        col2.metric("Wins", f"{wins:,} ({format_percent(wins / n_games)})")
-        col3.metric("Draws", f"{draws:,} ({format_percent(draws / n_games)})")
-        col4.metric("Losses", f"{losses:,} ({format_percent(losses / n_games)})")
-
-    # Control group: apply the same lost-stretch rule to both sides.
-    st.markdown("### Control group — score vs expected")
-
-    selected_control = profile["control"].loc[
-        profile["control"]["perf_group"] == perf_group_choice
-    ]
-
-    if selected_results.empty:
-        my_n = 0
-        my_score = None
-        my_expected = None
-        my_gap = None
-    else:
-        my_stats = selected_results.iloc[0]
-        my_n = int(my_stats["n"])
-        my_score = my_stats["score_pct"]
-        my_expected = my_stats["expected_score"]
-        my_gap = my_stats["score_vs_expected"]
-
-    if selected_control.empty:
-        opponent_n = 0
-        opponent_score = None
-        opponent_expected = None
-        opponent_gap = None
-    else:
-        opponent_stats = selected_control.iloc[0]
-        opponent_n = int(opponent_stats["n"])
-        opponent_score = opponent_stats["actual_score"]
-        opponent_expected = opponent_stats["expected_score"]
-        opponent_gap = opponent_stats["score_vs_expected"]
-
-    col1, col2 = st.columns(2)
-
-    col1.metric(
-        f"My score vs expected (n={my_n:,})",
-        format_percent(my_score),
-        delta=format_gap(my_gap),
-        help=(
-            f"Expected score: {format_percent(my_expected)}. "
-            "Expected score is the average win probability at the start of "
-            "my first qualifying lost stretch."
-        ),
+        ["main", "bullet"],
+        format_func=lambda g: GROUP_LABELS.get(g, g),
+        horizontal=True,
+        key="m6_group",
+        label_visibility="collapsed",
     )
 
-    col2.metric(
-        f"Opponent score vs expected (n={opponent_n:,})",
-        format_percent(opponent_score),
-        delta=format_gap(opponent_gap),
-        help=(
-            f"Expected score: {format_percent(opponent_expected)}. "
-            "The same lost-stretch rule is applied from the opponent's POV; "
-            "their result is calculated as 1 - result_for_me."
-        ),
-    )
+    def for_group(frame: pd.DataFrame) -> pd.DataFrame:
+        return frame.loc[frame["perf_group"].eq(group)]
 
-    st.caption(
-        "If both score gaps are similar, that is evidence that the difference "
-        "comes from the win-percentage formula's calibration, not necessarily "
-        "from my swindling skill. The formula is calibrated on Lichess players "
-        "overall, not specifically on my rating."
-    )
+    results = for_group(profile["results"])
+    if results.empty or int(results.iloc[0]["n"]) == 0:
+        st.info("No game reached a lost position for this time control in the current selection.")
+        return
+    mine = results.iloc[0]
+    control = for_group(profile["control"])
+    theirs = control.iloc[0] if not control.empty and int(control.iloc[0]["n"]) > 0 else None
+    terminations = for_group(profile["saves_by_termination"])
 
-    # Move-level errors are measured in centipawns rather than move_quality.
-    st.markdown("### Opponent CP errors by position state")
+    render_answer(mine, theirs, share_saved_on_time(terminations), GROUP_LABELS[group])
+    render_main_chart(mine, theirs)
 
-    opponent_moves = profile["opponent_moves"]
-    selected_moves = opponent_moves.loc[
-        opponent_moves["perf_group"] == perf_group_choice
-    ]
-    lost_moves = selected_moves.loc[selected_moves["state"] == "lost"]
-    winning_moves = selected_moves.loc[selected_moves["state"] == "winning"]
-
-    if lost_moves.empty:
-        lost_n = 0
-        lost_rate = None
-        lost_errors = 0
-    else:
-        lost_stats = lost_moves.iloc[0]
-        lost_n = int(lost_stats["n"])
-        lost_rate = lost_stats["cp_error_rate"]
-        lost_errors = int(lost_stats["n_cp_errors"])
-
-    if winning_moves.empty:
-        winning_n = 0
-        winning_rate = None
-        winning_errors = 0
-    else:
-        winning_stats = winning_moves.iloc[0]
-        winning_n = int(winning_stats["n"])
-        winning_rate = winning_stats["cp_error_rate"]
-        winning_errors = int(winning_stats["n_cp_errors"])
-
-    col1, col2 = st.columns(2)
-    col1.metric(
-        f"Opponent error rate — I am lost (n={lost_n:,})",
-        format_percent(lost_rate),
-        help=(
-            f"{lost_errors:,} opponent moves with a CP error out of "
-            f"{lost_n:,} moves with valid evaluations."
-        ),
-    )
-    col2.metric(
-        f"Opponent error rate — I am winning (n={winning_n:,})",
-        format_percent(winning_rate),
-        help=(
-            f"{winning_errors:,} opponent moves with a CP error out of "
-            f"{winning_n:,} moves with valid evaluations."
-        ),
-    )
-
-    st.caption(
-        "Only moves with valid before/after evaluations enter these rates. "
-        "CP loss can be inflated in already-decided positions: for example, "
-        "an evaluation improving from -900 to -650 cp is a 250 cp loss for "
-        "the mover even though the game may remain lost. The difference in "
-        "these rates can therefore partly reflect the measurement itself."
-    )
-
-    # Game-level opportunity and save rates.
-    st.markdown("### Rescue opportunities and save rate")
-
-    opportunities = profile["opportunities"]
-    selected_opportunities = opportunities.loc[
-        opportunities["perf_group"] == perf_group_choice
-    ].copy()
-
-    if (
-        selected_opportunities.empty
-        or int(selected_opportunities["n_lost_games"].max()) == 0
-    ):
-        st.info("No qualifying lost games are available for this time control.")
-    else:
-        chance_rows = selected_opportunities.loc[
-            selected_opportunities["opponent_gave_chance"]
-        ]
-        no_chance_rows = selected_opportunities.loc[
-            ~selected_opportunities["opponent_gave_chance"]
-        ]
-        chance_row = chance_rows.iloc[0]
-        no_chance_row = no_chance_rows.iloc[0]
-        total_lost_games = int(chance_row["n_lost_games"])
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric(
-            "Opponent offered a chance",
-            format_percent(chance_row["share_of_lost_games"]),
-            help=(
-                f"{int(chance_row['n_games']):,} of "
-                f"{total_lost_games:,} qualifying lost games."
-            ),
+    with st.expander("Did my opponents give me chances?"):
+        render_chances(for_group(profile["opportunities"]), terminations)
+    with st.expander("How my saved games ended"):
+        render_terminations(terminations)
+    with st.expander("Do my opponents make more mistakes when I am lost?"):
+        render_opponent_errors(for_group(profile["opponent_moves"]), cp_error_threshold)
+    with st.expander("How this is computed"):
+        st.markdown(
+            f"""
+            - **Lost position:** my win probability stays at or below {lost_pct}% for
+              {min_plies} consecutive half-moves. It identifies a game, not one mistake.
+            - **Score:** win = 1, draw = ½, loss = 0, over those games ({int(mine['wins'])} wins,
+              {int(mine['draws'])} draws, {int(mine['losses'])} losses here).
+            - **Expectation:** the average engine win probability when the lost stretch begins.
+            - **My opponents (control group):** the same rule applied to the games where
+              *they* were lost. Their gap is the reference: the formula is calibrated on
+              Lichess players overall, so both sides may beat it a little.
+            - **A real chance:** an opponent move that lifts my win probability from
+              {lost_pct}% or less to {swing_to_pct}% or more (threshold fixed in advance).
+            - **No confidence interval yet** on this comparison, unlike conversion (M3) and
+              time pressure (M4): the gap is large compared with its rough standard error
+              (about 1 point), but it has not been through the bootstrap protocol.
+            - Observational: this does not prove that a given save was caused by my play.
+            """
         )
-        col2.metric(
-            "Saved when a chance was offered",
-            format_percent(chance_row["saved_rate"]),
-            help=(
-                f"{int(chance_row['n_saved']):,} wins or draws out of "
-                f"{int(chance_row['n_games']):,} games with a chance."
-            ),
-        )
-        col3.metric(
-            "Saved without an identified chance",
-            format_percent(no_chance_row["saved_rate"]),
-            help=(
-                f"{int(no_chance_row['n_saved']):,} wins or draws out of "
-                f"{int(no_chance_row['n_games']):,} games without a qualifying swing."
-            ),
-        )
-
-        opportunity_table = selected_opportunities[
-            [
-                "opponent_gave_chance",
-                "n_games",
-                "share_of_lost_games",
-                "n_saved",
-                "saved_rate",
-                "score_pct",
-            ]
-        ].copy()
-        opportunity_table["opponent_gave_chance"] = (
-            opportunity_table["opponent_gave_chance"]
-            .map({True: "Yes", False: "No"})
-        )
-        opportunity_table["share_of_lost_games"] = (
-            opportunity_table["share_of_lost_games"].map(format_percent)
-        )
-        opportunity_table["saved_rate"] = (
-            opportunity_table["saved_rate"].map(format_percent)
-        )
-        opportunity_table["score_pct"] = (
-            opportunity_table["score_pct"].map(format_percent)
-        )
-        opportunity_table = opportunity_table.rename(
-            columns={
-                "opponent_gave_chance": "Chance offered",
-                "n_games": "Lost games",
-                "share_of_lost_games": "Share of lost games",
-                "n_saved": "Games saved (win or draw)",
-                "saved_rate": "Save rate",
-                "score_pct": "Score",
-            }
-        )
-        st.dataframe(
-            opportunity_table,
-            hide_index=True,
-            width="stretch",
-        )
-
-    # Termination breakdown only includes qualifying lost games that ended
-    # in a save (win or draw), split by chance offered yes/no.
-    st.markdown("### How saved games ended")
-
-    saves_by_termination = profile["saves_by_termination"]
-    selected_terminations = saves_by_termination.loc[
-        saves_by_termination["perf_group"] == perf_group_choice
-    ].copy()
-
-    if selected_terminations.empty:
-        st.info("No saved games are available for this time control.")
-    else:
-        selected_terminations["Chance offered"] = (
-            selected_terminations["opponent_gave_chance"]
-            .map({True: "Yes", False: "No"})
-        )
-        display_categories = {
-            "time": "Time",
-            "checkmate": "Checkmate",
-            "resignation": "Resignation",
-            "stalemate": "Stalemate",
-            "repetition": "Repetition",
-            "insufficient_material": "Insufficient material",
-            "agreement": "Agreement",
-            "abandoned": "Abandoned",
-            "normal_lichess": "Normal (Lichess; reason hidden)",
-            "other": "Other / unrecognized",
-        }
-        selected_terminations["Termination category"] = (
-            selected_terminations["termination_category"].map(display_categories)
-        )
-        selected_terminations["Share of saved games"] = (
-            selected_terminations["share_of_saved_games"].map(format_percent)
-        )
-        selected_terminations = selected_terminations.rename(
-            columns={"n_saved": "Saved games"}
-        )
-        selected_terminations = selected_terminations.sort_values(
-            ["Chance offered", "Saved games"],
-            ascending=[True, False],
-        )
-        st.dataframe(
-            selected_terminations[
-                [
-                    "Chance offered",
-                    "Termination category",
-                    "Saved games",
-                    "Share of saved games",
-                ]
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-
-    st.caption(
-        "Lichess 'Normal' combines checkmates, resignations and draws without "
-        "telling us which occurred, so it is kept as its own category instead "
-        "of guessing. Shares are calculated among saved games within each "
-        "chance-offered group."
-    )
-
-    st.markdown("### How I interpret this")
-    st.markdown(
-        f"""
-        - **A lost stretch identifies a game, not a single mistake.** My win
-          probability must remain at or below {lost_pct}% for at least
-          {min_plies} consecutive plies.
-
-        - **The control group is essential.** The same rule is applied to games
-          where my opponent was lost. If both sides exceed their expected score
-          by a similar amount, the difference may come from the win-probability
-          formula's calibration rather than from swindling skill.
-
-        - **A rescue opportunity is a meaningful swing.** It is counted when an
-          opponent move after the lost stretch raises my win probability from
-          at most {lost_pct}% to at least {swing_to_pct}%. The threshold is fixed
-          in advance rather than tuned to fit the results.
-
-        - **The save rate measures conversion of an opportunity.** The
-          opportunity rate shows how often opponents offer a substantial
-          swing; the save rate shows how often I turn those games into a win
-          or a draw. The no-opportunity group captures saves without that
-          particular kind of swing.
-
-        - **CP errors are secondary evidence.** A large centipawn loss can
-          happen in an already-decided position without meaningfully changing
-          the outcome. A CP error is not automatically a real rescue chance.
-
-        - **Termination categories distinguish different kinds of saves.**
-          A game saved on time is different from one saved through a board
-          reversal. Lichess 'Normal' is ambiguous and is not interpreted more
-          specifically than the source data allows.
-
-        The expected score uses a win-probability formula calibrated on Lichess
-        players overall, not specifically on my rating. These results are
-        observational and do not prove that an opponent error alone caused a save.
-        """
-    )
 
 
 if __name__ == "__main__":
