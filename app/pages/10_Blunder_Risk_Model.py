@@ -1,3 +1,8 @@
+"""V2 — Blunder-risk model (spec V2, "Evaluation"), laid out with the
+dashboard principles (spec section 6): does the model work, then what drives
+it; the SHAP dependence plot and the calibration sit in expanders.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -10,6 +15,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.controls import BADGE_GRAY, BADGE_GREEN, render_badge
 from app.filters import game_url, render_filters_not_applied, selected_points
 from app.model_labels import feature_label
 from app.ui import load_ui
@@ -27,19 +33,10 @@ CATEGORICAL_PREFIXES: dict[str, str] = {
 }
 
 PLOTLY_LAYOUT = go.Layout(
-    font=dict(
-        family="Inter",
-        size=14,
-        color="#DCE3E9",
-    ),
+    font=dict(family="Inter", size=14, color="#DCE3E9"),
     hovermode="closest",
     template="plotly_dark",
-    margin=dict(
-        l=40,
-        r=35,
-        t=45,
-        b=35,
-    ),
+    margin=dict(l=40, r=35, t=45, b=35),
 )
 
 
@@ -49,54 +46,35 @@ def find_latest_shap_file() -> Path | None:
     Run folders are named YYYY-MM-DD_HH-MM-SS, so their names sort in time
     order. Ablation runs have no shap_values.parquet -- skip them.
     """
-
     shap_files = sorted(
         EVALUATION_DIR.glob("*/shap_values.parquet"),
         key=lambda path: path.parent.name,
     )
-
-    if not shap_files:
-        return None
-
-    return shap_files[-1]
+    return shap_files[-1] if shap_files else None
 
 
 @st.cache_data
 def load_shap_values(path: str) -> pd.DataFrame:
-    """Cached on the path (a str, hashable): a new evaluation run = a new
-    path = a fresh load, without restarting Streamlit.
-    """
-
+    """Cached on the path: a new evaluation run = a new path = a fresh load."""
     return pd.read_parquet(path)
 
 
 @st.cache_data
-def load_shap_summary(path: str) -> pd.DataFrame:
-    """Load the SHAP feature-importance ranking for one evaluation run."""
-
+def load_csv(path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
 @st.cache_data
-def load_calibration(path: str) -> pd.DataFrame:
-    """Calibration table written by evaluate_model.calibration_data, one row
-    per probability decile and model: predicted_mean, actual_rate, n_in_bin.
-
-    Read from the SAME run folder as shap_values.parquet, so every chart on
-    this page describes the same trained model.
-    """
-    return pd.read_csv(path)
+def load_base_rate(path: str) -> tuple[float, int]:
+    """Blunder rate and move count of the test set (test_predictions.parquet)."""
+    labels = pd.read_parquet(path, columns=["is_blunder"])["is_blunder"]
+    return float(labels.mean()), len(labels)
 
 
 def plot_calibration(calibration: pd.DataFrame) -> None:
     """Predicted risk (x) vs observed blunder rate (y), one line per model,
-    plus the y = x diagonal: on the diagonal, "7% predicted" really means
-    7% of those moves were blunders (spec: "usable as a real probability").
-    """
-    calibration = calibration.sort_values(
-        ["model", "predicted_mean"]
-    )
-
+    plus the y = x diagonal (spec: "usable as a real probability")."""
+    calibration = calibration.sort_values(["model", "predicted_mean"])
     fig = px.line(
         calibration,
         x="predicted_mean",
@@ -111,58 +89,25 @@ def plot_calibration(calibration: pd.DataFrame) -> None:
             "n_in_bin": "Moves in bin",
         },
     )
-
     fig.add_shape(
-        type="line",
-        x0=0,
-        y0=0,
-        x1=1,
-        y1=1,
-        line=dict(color="gray", dash="dash"),
-        layer="below",
+        type="line", x0=0, y0=0, x1=1, y1=1,
+        line=dict(color="gray", dash="dash"), layer="below",
     )
-
     axis_max = min(
         1.0,
-        1.1
-        * max(
-            calibration["predicted_mean"].max(),
-            calibration["actual_rate"].max(),
-        ),
+        1.1 * max(calibration["predicted_mean"].max(), calibration["actual_rate"].max()),
     )
-
     fig.update_layout(**PLOTLY_LAYOUT.to_plotly_json())
-
-    fig.update_xaxes(
-        tickformat=".0%",
-        range=[0, axis_max],
-        title="Mean predicted risk",
-        constrain="domain",
-    )
-
-    fig.update_yaxes(
-        tickformat=".0%",
-        range=[0, axis_max],
-        title="Observed blunder rate",
-        scaleanchor="x",
-        scaleratio=1,
-    )
-
+    fig.update_xaxes(tickformat=".0%", range=[0, axis_max], title="Mean predicted risk", constrain="domain")
+    fig.update_yaxes(tickformat=".0%", range=[0, axis_max], title="Observed blunder rate",
+                     scaleanchor="x", scaleratio=1)
     st.plotly_chart(fig, width="stretch")
 
 
-def prepare_plot_data(
-    shap_data: pd.DataFrame,
-) -> tuple[pd.DataFrame, list[str]]:
-    """Prepare plot features, combining one-hot columns into categorical groups.
-
-    Each reconstructed categorical feature gets its original category as its
-    value and the sum of its one-hot SHAP contributions as its attribution.
-    This avoids displaying separate 0/1 columns in the feature selector.
-    """
-
+def prepare_plot_data(shap_data: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Plot features, with one-hot columns combined into their categorical group
+    (value = the category, attribution = the sum of its one-hot SHAP values)."""
     plot_data = shap_data.copy()
-
     raw_features = [
         column
         for column in plot_data.columns
@@ -170,552 +115,246 @@ def prepare_plot_data(
         and not column.startswith("shap_")
         and f"shap_{column}" in plot_data.columns
     ]
-
-    one_hot_columns = {
-        column
-        for column in raw_features
-        if column.startswith(tuple(CATEGORICAL_PREFIXES))
-    }
-
+    one_hot_columns = {c for c in raw_features if c.startswith(tuple(CATEGORICAL_PREFIXES))}
     available_features = [
-        column
-        for column in raw_features
-        if column not in one_hot_columns
-        and pd.api.types.is_numeric_dtype(plot_data[column])
+        c for c in raw_features
+        if c not in one_hot_columns and pd.api.types.is_numeric_dtype(plot_data[c])
     ]
-
     for prefix, feature_name in CATEGORICAL_PREFIXES.items():
-        group_columns = sorted(
-            column
-            for column in raw_features
-            if column.startswith(prefix)
-        )
-
+        group_columns = sorted(c for c in raw_features if c.startswith(prefix))
         if not group_columns:
             continue
-
-        values = (
-            plot_data[group_columns]
-            .apply(pd.to_numeric, errors="coerce")
-            .fillna(0)
-        )
-
-        categories = values.idxmax(axis=1).str.slice(
-            start=len(prefix)
-        )
-
-        categories = categories.where(
-            values.max(axis=1) > 0,
-            "Unknown",
-        )
-
-        shap_columns = [
-            f"shap_{column}"
-            for column in group_columns
-            if f"shap_{column}" in plot_data.columns
-        ]
-
+        values = plot_data[group_columns].apply(pd.to_numeric, errors="coerce").fillna(0)
+        categories = values.idxmax(axis=1).str.slice(start=len(prefix))
+        categories = categories.where(values.max(axis=1) > 0, "Unknown")
+        shap_columns = [f"shap_{c}" for c in group_columns if f"shap_{c}" in plot_data.columns]
         if not shap_columns:
             continue
-
         plot_data[feature_name] = categories
-        plot_data[f"shap_{feature_name}"] = (
-            plot_data[shap_columns].sum(axis=1)
-        )
-
+        plot_data[f"shap_{feature_name}"] = plot_data[shap_columns].sum(axis=1)
         if feature_name not in available_features:
             available_features.append(feature_name)
-
     return plot_data, available_features
 
 
 def build_feature_summary(
-    shap_data: pd.DataFrame,
     plot_data: pd.DataFrame,
     available_features: list[str],
     summary_path: Path,
 ) -> pd.DataFrame:
-    """Rank available plot features using the run's SHAP summary.
-
-    If the summary is missing or does not match the available features,
-    calculate a fallback ranking from the saved SHAP values.
-    """
-
+    """Rank features with the run's SHAP summary, or from the SHAP values."""
     summary = pd.DataFrame()
-
     if summary_path.exists():
-        summary = load_shap_summary(str(summary_path))
-
+        summary = load_csv(str(summary_path))
     if {"feature", "mean_abs_shap"}.issubset(summary.columns):
-        summary = summary[
-            ["feature", "mean_abs_shap"]
-        ].copy()
-
+        summary = summary[["feature", "mean_abs_shap"]].copy()
         summary["feature"] = summary["feature"].astype(str)
-
-        summary["mean_abs_shap"] = pd.to_numeric(
-            summary["mean_abs_shap"],
-            errors="coerce",
-        )
-
-        summary = summary.dropna(
-            subset=["mean_abs_shap"]
-        )
-
-        summary = summary[
-            summary["feature"].isin(available_features)
-        ]
-
-        summary = summary.drop_duplicates(
-            subset=["feature"]
-        )
-
+        summary["mean_abs_shap"] = pd.to_numeric(summary["mean_abs_shap"], errors="coerce")
+        summary = summary.dropna(subset=["mean_abs_shap"])
+        summary = summary[summary["feature"].isin(available_features)].drop_duplicates("feature")
     if summary.empty:
-        summary_rows = []
-
+        rows = []
         for feature in available_features:
-            shap_column = f"shap_{feature}"
-
-            if shap_column not in plot_data.columns:
-                continue
-
-            importance = pd.to_numeric(
-                plot_data[shap_column],
-                errors="coerce",
-            ).abs().mean()
-
-            if pd.notna(importance):
-                summary_rows.append(
-                    {
-                        "feature": feature,
-                        "mean_abs_shap": float(importance),
-                    }
-                )
-
-        summary = pd.DataFrame(
-            summary_rows,
-            columns=["feature", "mean_abs_shap"],
-        )
-
-    return summary.sort_values(
-        "mean_abs_shap",
-        ascending=False,
-    ).reset_index(drop=True)
+            column = f"shap_{feature}"
+            if column in plot_data.columns:
+                importance = pd.to_numeric(plot_data[column], errors="coerce").abs().mean()
+                if pd.notna(importance):
+                    rows.append({"feature": feature, "mean_abs_shap": float(importance)})
+        summary = pd.DataFrame(rows, columns=["feature", "mean_abs_shap"])
+    return summary.sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
 
 
-st.set_page_config(
-    page_title="Chess Insights",
-    layout="wide",
-)
+def render_answer(run_dir: Path, top_features: list[str]) -> None:
+    """Does the model work? Read from the run's evaluation files."""
+    metrics_path = run_dir / "metrics_summary.csv"
+    paired_path = run_dir / "paired_bootstrap.csv"
+    predictions_path = run_dir / "test_predictions.parquet"
+    if not (metrics_path.exists() and paired_path.exists()):
+        st.info("This evaluation run has no metrics summary; re-run `python -m src.model.evaluate_model`.")
+        return
+    metrics = load_csv(str(metrics_path)).set_index("model")
+    paired = load_csv(str(paired_path)).iloc[0]
+    lightgbm, baseline = metrics.loc["lightgbm"], metrics.loc["baseline_logistic"]
+    beats = paired["ci_lower"] > 0
 
-load_ui()
-
-
-def main() -> None:
-    st.title("V2 — Blunder Risk Model")
-    render_filters_not_applied(
-        "the model is evaluated once, on a fixed chronological test set."
+    render_badge(
+        "Beats the simple baseline" if beats else "No clear gain over the simple baseline",
+        BADGE_GREEN if beats else BADGE_GRAY,
     )
-
+    random_text = ""
+    if predictions_path.exists():
+        base_rate, n_moves = load_base_rate(str(predictions_path))
+        random_text = (
+            f" Random guessing would score **{base_rate:.3f}** (the blunder rate of these "
+            f"{n_moves:,} test moves)."
+        )
+    drivers = ", ".join(feature_label(f).lower() for f in top_features[:3])
     st.markdown(
-        """
-        **Question:** which factors influence my blunder risk, and how does
-        each factor affect the model's prediction?
-
-        Each point represents a move from the test set. The chart shows
-        whether a given feature value pushes the model towards predicting a
-        blunder or away from it. One-hot encoded categorical columns are
-        grouped by feature to make the results easier to interpret.
-        """
+        f"#### On my most recent games, which the model never saw, it ranks risky moves "
+        f"{'better than' if beats else 'about as well as'} a simple model: PR-AUC "
+        f"**{lightgbm['pr_auc']:.3f}** against **{baseline['pr_auc']:.3f}** "
+        f"({paired['pr_auc_delta']:+.3f}, 95% interval {paired['ci_lower']:+.3f} to "
+        f"{paired['ci_upper']:+.3f}).{random_text} What weighs most in its predictions: "
+        f"{drivers}."
     )
 
-    shap_path = find_latest_shap_file()
 
-    if shap_path is None:
-        st.warning(
-            "No SHAP values were found. Run "
-            "`python -m src.model.evaluate_model` from the project root "
-            "to generate the evaluation artifacts."
-        )
-        return
-
-    shap_data = load_shap_values(str(shap_path))
-
-    if shap_data.empty:
-        st.warning("The latest SHAP file is empty.")
-        return
-
-    if not {"game_id", "ply"}.issubset(shap_data.columns):
-        st.warning(
-            "The SHAP file does not contain `game_id` and `ply`. "
-            "Run `python -m src.model.evaluate_model` again to regenerate "
-            "the file with move metadata."
-        )
-        return
-
-    plot_data, available_features = prepare_plot_data(shap_data)
-
-    if not available_features:
-        st.warning(
-            "No usable features were found in the SHAP file."
-        )
-        return
-
-    summary_path = shap_path.parent / "shap_summary.csv"
-
-    if not summary_path.exists():
-        st.warning(
-            "`shap_summary.csv` is missing. Feature rankings will be "
-            "calculated directly from the available SHAP values."
-        )
-
-    feature_summary = build_feature_summary(
-        shap_data,
-        plot_data,
-        available_features,
-        summary_path,
-    )
-
-    if feature_summary.empty:
-        st.warning("Unable to calculate feature importance.")
-        return
-
-    top_summary = feature_summary.head(TOP_N_FEATURES).copy()
-    top_features = top_summary["feature"].tolist()
-
-    if not top_features:
-        st.warning("No important features are available for plotting.")
-        return
-
-    st.caption(
-        f"Evaluation run: {shap_path.parent.name} "
-        f"· {len(shap_data):,} moves analysed"
-    )
-
-    st.markdown("### Top risk factors")
-
-    st.caption(
-        "Features are ranked by mean absolute SHAP value. This measures "
-        "the magnitude of their contribution, not whether they increase "
-        "or decrease the predicted risk."
-    )
-
+def render_top_factors(top_summary: pd.DataFrame) -> None:
     bar_data = top_summary.copy()
     bar_data["label"] = bar_data["feature"].map(feature_label)
-
-    bar_fig = px.bar(
-        bar_data,
-        x="mean_abs_shap",
-        y="label",
-        orientation="h",
-        labels={
-            "mean_abs_shap": "Mean absolute SHAP importance",
-            "label": "Feature",
-        },
+    fig = px.bar(
+        bar_data, x="mean_abs_shap", y="label", orientation="h",
+        labels={"mean_abs_shap": "Average weight in the predictions (mean |SHAP|)", "label": ""},
     )
-
-    bar_fig.update_traces(
-        marker_color="#2E7DFF",
-        texttemplate="%{x:.3f}",
-        textposition="outside",
-        cliponaxis=False,
-    )
-
-    bar_fig.update_layout(
-        **PLOTLY_LAYOUT.to_plotly_json()
-    )
-
-    bar_fig.update_layout(
+    fig.update_traces(marker_color="#C7F36B", texttemplate="%{x:.2f}", textposition="outside",
+                      cliponaxis=False)
+    fig.update_layout(**PLOTLY_LAYOUT.to_plotly_json())
+    fig.update_layout(
         height=max(300, 42 * len(bar_data) + 70),
         showlegend=False,
-        margin=dict(
-            l=25,
-            r=75,
-            t=15,
-            b=35,
-        ),
-        xaxis=dict(
-            title="Mean absolute SHAP importance",
-            showgrid=True,
-            gridcolor="rgba(255,255,255,0.07)",
-            zeroline=False,
-        ),
-        yaxis=dict(
-            title="",
-            categoryorder="total ascending",
-            showgrid=False,
-        ),
+        margin=dict(l=25, r=75, t=15, b=35),
+        xaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.07)", zeroline=False),
+        yaxis=dict(title="", categoryorder="total ascending", showgrid=False),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
     )
-
-    st.plotly_chart(
-        bar_fig,
-        width="stretch",
-        config={
-            "displayModeBar": False,
-            "responsive": True,
-        },
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    st.caption(
+        "How much each factor moves the predictions on average, up or down. It says what the "
+        "model relies on, not whether the factor raises or lowers the risk (see the next section)."
     )
 
-    st.markdown("### SHAP dependence plot")
 
+def render_dependence(plot_data: pd.DataFrame, top_features: list[str]) -> None:
+    """SHAP dependence plot for one feature, coloured by another."""
     col1, col2 = st.columns(2)
-
-    default_x_index = (
-        top_features.index("eval_before_move")
-        if "eval_before_move" in top_features
-        else 0
-    )
-
+    default_x = top_features.index("eval_before_move") if "eval_before_move" in top_features else 0
     with col1:
-        x_feature = st.selectbox(
-            "Feature to examine",
-            options=top_features,
-            index=default_x_index,
-            format_func=feature_label,
-            help=(
-                "Choose one of the most important features to examine "
-                "how it influences the model's prediction."
-            ),
-        )
-
-    color_options = [
-        feature
-        for feature in top_features
-        if feature != x_feature
-    ]
-
-    if not color_options:
-        color_options = top_features
-
-    default_color_index = (
-        color_options.index("material_imbalance")
-        if "material_imbalance" in color_options
-        else 0
-    )
-
+        x_feature = st.selectbox("Factor", top_features, index=default_x, format_func=feature_label)
+    color_options = [f for f in top_features if f != x_feature] or top_features
+    default_color = color_options.index("material_imbalance") if "material_imbalance" in color_options else 0
     with col2:
         color_feature = st.selectbox(
-            "Colour points by",
-            options=color_options,
-            index=default_color_index,
-            format_func=feature_label,
-            help=(
-                "A second feature can help reveal interactions or "
-                "differences between positions."
-            ),
+            "Colour points by", color_options, index=default_color, format_func=feature_label
         )
 
     shap_column = f"shap_{x_feature}"
-
-    plot_data_filtered = plot_data.dropna(
-        subset=[
-            x_feature,
-            shap_column,
-            color_feature,
-        ]
-    ).copy()
-
-    if plot_data_filtered.empty:
-        st.warning(
-            "No complete observations are available for these features."
-        )
+    data = plot_data.dropna(subset=[x_feature, shap_column, color_feature]).copy()
+    if data.empty:
+        st.warning("No complete observations are available for these factors.")
         return
 
-    x_label = feature_label(x_feature)
-    color_label = feature_label(color_feature)
-    color_is_numeric = pd.api.types.is_numeric_dtype(
-        plot_data_filtered[color_feature]
-    )
-
+    x_label, color_label = feature_label(x_feature), feature_label(color_feature)
     scatter_kwargs: dict[str, object] = {}
-
-    if color_is_numeric:
-        scatter_kwargs["color_continuous_scale"] = [
-            "#2E7DFF",
-            "#B8E35A",
-            "#F4BE55",
-        ]
-
+    if pd.api.types.is_numeric_dtype(data[color_feature]):
+        scatter_kwargs["color_continuous_scale"] = ["#2E7DFF", "#B8E35A", "#F4BE55"]
         if color_feature == "material_imbalance":
             scatter_kwargs["range_color"] = (-10, 10)
         else:
-            color_values = pd.to_numeric(
-                plot_data_filtered[color_feature],
-                errors="coerce",
-            ).dropna()
-
-            if not color_values.empty:
-                lower = color_values.quantile(0.02)
-                upper = color_values.quantile(0.98)
-
-                if lower < upper:
-                    scatter_kwargs["range_color"] = (
-                        float(lower),
-                        float(upper),
-                    )
+            values = pd.to_numeric(data[color_feature], errors="coerce").dropna()
+            if not values.empty and values.quantile(0.02) < values.quantile(0.98):
+                scatter_kwargs["range_color"] = (float(values.quantile(0.02)), float(values.quantile(0.98)))
     else:
-        scatter_kwargs["color_discrete_sequence"] = [
-            "#2E7DFF",
-            "#B8E35A",
-            "#F4BE55",
-            "#C084FC",
-            "#F87171",
-            "#38BDF8",
-        ]
+        scatter_kwargs["color_discrete_sequence"] = ["#2E7DFF", "#B8E35A", "#F4BE55", "#C084FC", "#F87171", "#38BDF8"]
 
     fig = px.scatter(
-        plot_data_filtered,
-        x=x_feature,
-        y=shap_column,
-        color=color_feature,
-        custom_data=[
-            "game_id",
-            "ply",
-            color_feature,
-        ],
-        labels={
-            x_feature: x_label,
-            shap_column: f"SHAP contribution — {x_label}",
-            color_feature: color_label,
-        },
-        opacity=0.75,
-        **scatter_kwargs,
+        data, x=x_feature, y=shap_column, color=color_feature,
+        custom_data=["game_id", "ply", color_feature],
+        labels={x_feature: x_label, shap_column: f"Push on the risk — {x_label}", color_feature: color_label},
+        opacity=0.75, **scatter_kwargs,
     )
-
     fig.update_traces(
-        marker=dict(
-            size=7,
-            line=dict(
-                width=0,
-            ),
-        ),
+        marker=dict(size=7, line=dict(width=0)),
         hovertemplate=(
-            "<b>Game:</b> %{customdata[0]}<br>"
-            "<b>Half-move:</b> %{customdata[1]}<br>"
-            f"<b>{x_label}:</b> %{{x}}<br>"
-            "<b>SHAP contribution:</b> %{y:.4f}<br>"
-            f"<b>{color_label}:</b> %{{customdata[2]}}"
-            "<extra></extra>"
+            "<b>Game:</b> %{customdata[0]}<br><b>Half-move:</b> %{customdata[1]}<br>"
+            f"<b>{x_label}:</b> %{{x}}<br><b>Push on the risk:</b> %{{y:.3f}}<br>"
+            f"<b>{color_label}:</b> %{{customdata[2]}}<extra></extra>"
         ),
     )
-
-    fig.add_hline(
-        y=0,
-        line_dash="dash",
-        line_width=1.5,
-        line_color="#F4BE55",
-        annotation_text="SHAP = 0",
-        annotation_position="top left",
-        annotation_font_color="#F4BE55",
-    )
-
+    fig.add_hline(y=0, line_dash="dash", line_width=1.5, line_color="#F4BE55")
+    fig.update_layout(**PLOTLY_LAYOUT.to_plotly_json())
     fig.update_layout(
-        **PLOTLY_LAYOUT.to_plotly_json()
-    )
-
-    fig.update_layout(
-        height=560,
-        xaxis=dict(
-            title=x_label,
-            showgrid=False,
-            zeroline=False,
-            showline=False,
-        ),
-        yaxis=dict(
-            title=f"SHAP contribution — {x_label}",
-            gridcolor="rgba(255,255,255,0.07)",
-            zeroline=False,
-            showline=False,
-        ),
+        height=520,
+        xaxis=dict(title=x_label, showgrid=False, zeroline=False),
+        yaxis=dict(title=f"Push on the risk — {x_label}", gridcolor="rgba(255,255,255,0.07)", zeroline=False),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        hoverlabel=dict(
-            bgcolor="#12181E",
-            bordercolor="rgba(255,255,255,0.10)",
-            font=dict(
-                family="Inter",
-                size=13,
-            ),
-        ),
     )
-
     event = st.plotly_chart(
-        fig,
-        width="stretch",
-        config={
-            "displayModeBar": False,
-            "responsive": True,
-        },
-        on_select="rerun",
-        selection_mode="points",
-        key="shap_dependence_chart",
+        fig, width="stretch", config={"displayModeBar": False},
+        on_select="rerun", selection_mode="points", key="shap_dependence_chart",
     )
-
     points = selected_points(event)
     if points and points[0].get("customdata"):
         game_id, ply = points[0]["customdata"][:2]
         # Open the board BEFORE the move: the model predicts from that position.
-        url = game_url(game_id, ply=int(ply) - 1)
-        st.markdown(f"Selected move: [{game_id}, half-move {int(ply)}]({url})")
-
+        st.markdown(f"Selected move: [{game_id}, half-move {int(ply)}]({game_url(game_id, ply=int(ply) - 1)})")
     st.caption(
-        "Hover over a point to identify the game and half-move; click it for a link "
-        "to the game (Lichess opens at the position before the move). "
-        "The material imbalance colour scale is limited to the range "
-        "−10 to +10, preventing extreme values from hiding differences "
-        "between more typical positions."
+        "Each point is one test move. Above the dashed line, that factor pushed the predicted "
+        "risk up; below, down (in log-odds). Click a point for a link to the position. "
+        "Reading rule (2026-10-17): the 20-point blunder label alone produces a curve peaking "
+        "near 60% win probability and symmetric around it, so only a peak clearly elsewhere, "
+        "or an asymmetry, is a candidate behavioural pattern."
     )
 
-    st.markdown("### Calibration")
 
-    calibration_path = shap_path.parent / "calibration.csv"
-    if not calibration_path.exists():
-        st.info("Calibration data are unavailable for this run; skipping the calibration plot.")
-    else:
-        plot_calibration(load_calibration(str(calibration_path)))
-        st.caption(
-            "Points above the diagonal indicate that the model under-predicts risk; "
-            "points below it indicate that the model over-predicts risk."
+st.set_page_config(page_title="Chess Insights", layout="wide")
+load_ui()
+
+
+def main() -> None:
+    st.title("V2 — Blunder-risk model")
+    render_filters_not_applied("the model is evaluated once, on a fixed chronological test set.")
+    st.markdown("**Question:** can a model tell, before I move, how likely I am to blunder — and what drives that risk?")
+
+    shap_path = find_latest_shap_file()
+    if shap_path is None:
+        st.warning(
+            "No evaluation run found. Run `python -m src.model.train`, then "
+            "`python -m src.model.evaluate_model`, from the project root."
         )
+        return
+    run_dir = shap_path.parent
+    plot_data, available_features = prepare_plot_data(load_shap_values(str(shap_path)))
+    summary = build_feature_summary(plot_data, available_features, run_dir / "shap_summary.csv")
+    top_summary = summary.head(TOP_N_FEATURES)
+    top_features = top_summary["feature"].tolist()
 
-    st.markdown("### How to interpret this")
+    render_answer(run_dir, top_features)
+    render_top_factors(top_summary)
 
-    st.markdown(
-        """
-        - **Each point represents one move.** Its horizontal position shows
-          the feature value. Its vertical position shows that feature's
-          contribution to the model's prediction.
-
-        - **Positive SHAP:** the feature pushes the prediction towards a
-          blunder. **Negative SHAP:** it pushes the prediction away from a
-          blunder. For this binary LightGBM model, contributions are
-          generally expressed in log-odds, not percentage-point changes
-          in probability.
-
-        - **Corrected reading rule — 2026-10-17:** on a floor-free model,
-          the label alone predicts a blunder-rate curve peaking near 60%
-          win probability and symmetric around 60% over the remaining
-          domain [20, 100]. A 20-percentage-point win-probability drop
-          corresponds to a centipawn gap that is smallest when the interval
-          is centred on 50%, which occurs at a starting win probability of
-          60%. This gap is symmetric for starting win probabilities
-          \(w\) and \(120-w\). Therefore, a peak clearly away from 60% or
-          asymmetry around 60% is a behavioural candidate, not proof of a
-          behavioural effect. The centipawn-loss analysis remains the
-          decisive data-only check.
-
-        - **Look at the colours and point density.** They can reveal
-          interactions with another feature and show whether a pattern
-          is supported by many observations or only a few outliers.
-
-        These rules are interpretation heuristics, not proof of causation.
-        SHAP explains how the model uses its inputs; it does not prove
-        that changing a feature would cause the same change in actual
-        blunder risk.
-        """
-    )
+    with st.expander("How each factor pushes the risk up or down"):
+        render_dependence(plot_data, top_features)
+    with st.expander("Is the predicted risk a real probability? (calibration)"):
+        calibration_path = run_dir / "calibration.csv"
+        if calibration_path.exists():
+            plot_calibration(load_csv(str(calibration_path)))
+            st.caption(
+                "On the diagonal, a predicted 10% means 10% of those moves really were "
+                "blunders. Above it, the model under-predicts; below it, it over-predicts."
+            )
+        else:
+            st.info("No calibration data in this run.")
+    with st.expander("How this is computed"):
+        st.markdown(
+            f"""
+            - **What it predicts:** whether one of my moves is a blunder (a drop of 20 win%
+              points or more), using only what was known before I played it: position,
+              clock, recent evaluation swings, my recent pace. No player ratings
+              (chess.com records them after the game, which would leak the result).
+            - **Which games:** my current level only (rating floors in `config.toml`), my moves
+              after move 5, positions where a blunder is possible (win% ≥ 20).
+            - **Tested on my most recent games**, held out chronologically: the model never saw
+              them while training.
+            - **PR-AUC:** how well the model puts the rare blunders at the top of its list;
+              random guessing scores the blunder rate. The comparison with the simple model
+              (logistic regression) uses a paired bootstrap on whole games.
+            - **Training noise:** the same model varies by about 0.01 PR-AUC from one training
+              run to the next, so read small differences with care.
+            - **Factors (SHAP):** explain how the model uses its inputs, not what causes a
+              blunder. Evaluation run: `{run_dir.name}`.
+            """
+        )
 
 
 if __name__ == "__main__":
